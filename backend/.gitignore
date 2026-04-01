@@ -1,0 +1,24 @@
+# Maven
+/target
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/wrapper/maven-wrapper.properties
+
+# IDEA / Eclipse
+*.iml
+.idea/
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Spring Boot
+*.pid
+
+# Others
+node_modules/

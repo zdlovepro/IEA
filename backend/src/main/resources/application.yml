@@ -1,0 +1,13 @@
+spring:
+  application:
+    name: interactive-edu-backend
+  profiles:
+    active: dev
+
+server:
+  port: 8080
+
+logging:
+  level:
+    root: INFO
+    com.interactive.edu: DEBUG
