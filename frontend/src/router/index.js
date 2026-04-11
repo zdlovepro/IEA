@@ -1,0 +1,75 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import Home from '../views/Home.vue'
+
+const routes = [
+  {
+    path: '/',
+    name: 'Home',
+    component: Home,
+    meta: {
+      title: '首页',
+    },
+  },
+  {
+    path: '/upload',
+    name: 'Upload',
+    component: () => import('../views/Upload.vue'),
+    meta: {
+      title: '上传课件',
+    },
+  },
+  {
+    path: '/courses',
+    name: 'Courses',
+    component: () => import('../views/Courses.vue'),
+    meta: {
+      title: '我的课程',
+    },
+  },
+  {
+    path: '/mine',
+    name: 'Mine',
+    component: () => import('../views/Mine.vue'),
+    meta: {
+      title: '我的',
+    },
+  },
+  {
+    path: '/lecture/:coursewareId',
+    name: 'Lecture',
+    component: () => import('../views/Lecture.vue'),
+    meta: {
+      title: '讲课',
+    },
+  },
+  {
+    path: '/script/:coursewareId',
+    name: 'Script',
+    component: () => import('../views/Script.vue'),
+    meta: {
+      title: '讲稿预览',
+    },
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    name: 'NotFound',
+    component: () => import('../views/NotFound.vue'),
+    meta: {
+      title: '页面不存在',
+    },
+  },
+]
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+})
+
+// 路由守卫
+router.beforeEach((to, from, next) => {
+  // 设置页面标题
+  document.title = `${to.meta.title || 'SoftDesign'} - ${import.meta.env.VITE_APP_TITLE}`
+  next()
+})
+
+export default router

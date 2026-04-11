@@ -1,0 +1,197 @@
+# ================================
+# Java (Spring Boot) 相关
+# ================================
+# 编译输出
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Maven 构建目录
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# Gradle 构建目录
+.gradle/
+build/
+gradle-app.setting
+!gradle-wrapper.jar
+
+# ================================
+# Python (FastAPI) 相关
+# ================================
+# 虚拟环境
+venv/
+env/
+ENV/
+.venv
+env.bak/
+venv.bak/
+
+# Python 缓存和编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 打包文件
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 单元测试报告
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# 环境变量文件
+.env
+.env.*
+!.env.example
+
+# ================================
+# 前端 (Vue/React) 相关
+# ================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# 构建输出
+dist/
+dist-ssr/
+*.local
+
+# 编辑器临时文件
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# ================================
+# IDE 和操作系统
+# ================================
+# IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
+
+# NetBeans
+nbproject/
+nbactions.xml
+nbbuild/
+dist/
+nbdist/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ================================
+# 日志文件
+# ================================
+*.log
+logs/
+
+# ================================
+# 临时文件和备份
+# ================================
+*.tmp
+*.bak
+*.swp
+*~
+*.orig
+
+# ================================
+# Docker 相关（不忽略 Dockerfile，忽略构建产物）
+# ================================
+.dockerignore
+
+# ================================
+# 数据库、存储挂载点（如果需要）
+# ================================
+# 本地 MinIO 数据目录
+minio-data/
+
+# PostgreSQL 数据目录（如果本地运行）
+pg-data/
+
+# 向量库数据目录（如 Milvus）
+milvus-data/
+
+# ================================
+# 配置文件（敏感信息，保留示例）
+# ================================
+# 只忽略具体的配置文件，保留示例文件
+application-local.yml
+application-dev.yml
+application-prod.yml
+bootstrap-local.yml
+*.secret
+*.key
+*.pem
+
+# 但保留示例配置
+!application-example.yml
+!application-local.example.yml
+!.env.example
+!*.example.*
+
+# ================================
+# 文档和测试输出
+# ================================
+*.pdf
+*.docx
+*.pptx
+!README.md
+!docs/*.md
+
+# ================================
+# Docker Compose 数据挂载
+# ================================
+volumes/
