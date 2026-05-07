@@ -31,8 +31,11 @@ export default defineConfig({
     sourcemap: false,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vue: ['vue', 'vue-router', 'pinia'],
+        manualChunks(id) {
+          if (['vue', 'vue-router', 'pinia'].some(pkg => id.includes(`node_modules/${pkg}/`))) {
+            return 'vue'
+          }
+          return undefined
         },
       },
     },

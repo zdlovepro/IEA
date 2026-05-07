@@ -1,11 +1,10 @@
 <template>
   <div class="lecture-page">
-    <!-- 讲稿内容区域 -->
     <div class="lecture-content">
       <div class="slide-section">
         <div class="slide-header">
           <h2>{{ currentSlide?.title || '加载中...' }}</h2>
-          <span class="state-badge" :class="lectureState">{{ stateLabel }}</span>
+          <span class="state-badge" :class="statusMeta.className">{{ statusMeta.text }}</span>
         </div>
         <div class="slide-body">
           {{ currentSlide?.content || '' }}
@@ -15,51 +14,48 @@
         </div>
       </div>
 
-      <!-- 播放控制栏 -->
       <div class="controls">
         <button class="btn btn-control" @click="previousSlide" :disabled="currentPage <= 1">
-          ⬅️ 上一页
+          猬咃笍 上一页
         </button>
 
         <div class="center-controls">
-          <!-- TTS 语音按钮 -->
           <button class="btn btn-tts" @click="toggleSpeech" :class="{ speaking: isSpeaking }">
-            {{ isSpeaking ? '🔊 朗读中' : '🔈 朗读' }}
+            {{ isSpeaking ? '馃攰 朗读中' : '馃攬 朗读' }}
           </button>
 
-          <!-- 暂停/继续 -->
           <button
-            v-if="lectureState === 'playing'"
+            v-if="lectureStatus === LECTURE_STATE.PLAYING"
             class="btn btn-pause"
-            @click="pauseLecture"
+            @click="handlePauseLecture"
+            :disabled="lectureStore.isLoading || !lectureStore.sessionId"
           >
-            ⏸️ 暂停
+            鈴革笍 暂停
           </button>
           <button
-            v-else-if="lectureState === 'paused'"
+            v-else-if="lectureStatus === LECTURE_STATE.INTERRUPTED"
             class="btn btn-resume"
-            @click="resumeLecture"
+            @click="handleResumeLecture"
+            :disabled="lectureStore.isLoading || !lectureStore.sessionId"
           >
-            ▶️ 继续
+            鈻讹笍 继续
           </button>
 
           <span class="progress">{{ currentPage }} / {{ totalPages }}</span>
         </div>
 
         <button class="btn btn-control" @click="nextSlide" :disabled="currentPage >= totalPages">
-          下一页 ➡️
+          下一页 鉃★笍
         </button>
       </div>
 
-      <!-- 进度条 -->
       <div class="progress-bar">
         <div class="progress-fill" :style="{ width: progressPercent + '%' }"></div>
       </div>
     </div>
 
-    <!-- 问答区域 -->
     <div class="qa-section">
-      <h3>💬 学生问答</h3>
+      <h3>馃挰 学生问答</h3>
       <div class="qa-input">
         <input
           v-model="question"
@@ -79,7 +75,7 @@
           <div class="qa-answer" v-html="renderMd(qa.answer)"></div>
           <div class="qa-evidence" v-if="qa.evidence?.length">
             <details>
-              <summary>📎 参考来源 ({{ qa.evidence.length }})</summary>
+              <summary>馃搸 参考来源 ({{ qa.evidence.length }})</summary>
               <div v-for="(ev, i) in qa.evidence" :key="i" class="evidence-item">
                 <span class="evidence-source">{{ ev.source }}</span>
                 {{ ev.text }}
@@ -87,176 +83,221 @@
             </details>
           </div>
         </div>
-        <div v-if="qaList.length === 0" class="qa-empty">暂无问答记录，试试问个问题吧</div>
+        <div v-if="qaList.length === 0" class="qa-empty">暂无问答记录，试试问一个问题吧</div>
       </div>
     </div>
 
-    <!-- 错误提示 -->
-    <div v-if="errorMsg" class="error-toast" @click="errorMsg = ''">⚠️ {{ errorMsg }}</div>
+    <div v-if="errorMsg" class="error-toast" @click="clearError">鈿狅笍 {{ errorMsg }}</div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { useCourseStore } from '@/stores/course'
-import request from '@/utils/request'
-import { LECTURE_API, QA_API, SCRIPT_API } from '@/constants/api'
-import { LECTURE_STATE } from '@/constants/lecture'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { marked } from 'marked'
+import { getCoursewareScript } from '@/api/courseware'
+import { pauseLecture, resumeLecture, startLecture } from '@/api/lecture'
+import { askText } from '@/api/qa'
+import { LECTURE_STATE, LECTURE_STATUS_MAP, normalizeLectureStatus } from '@/constants/lecture'
+import { useLectureStore } from '@/stores/lecture'
+import { getErrorMessage } from '@/utils'
 
 const route = useRoute()
-const router = useRouter()
-const courseStore = useCourseStore()
+const lectureStore = useLectureStore()
 
 const coursewareId = route.params.coursewareId
 
-// ========== 讲课状态 ==========
-/** 讲课状态机：idle->playing->paused->finished */
-const lectureState = ref(LECTURE_STATE.IDLE)
-/** 后端返回的会话 ID，翻页和问答接口需要传入 */
-const sessionId = ref(null)
-/** 译自讲稿 segments 的幻灯片数据 */
 const slides = ref([])
-/** 当前页码（1-based） */
-const currentPage = ref(1)
-const errorMsg = ref('')
-
-// ========== 问答 ==========
-/** 输入框绑定内容 */
 const question = ref('')
-/** 是否正在等待问答接口返回 */
 const isAsking = ref(false)
-/** 问答历史列表，每项包含 { id, question, answer, evidence } */
 const qaList = ref([])
 const qaHistoryRef = ref(null)
-
-// ========== TTS ==========
-/** 是否正在语音朗读 */
 const isSpeaking = ref(false)
-/** 当前 SpeechSynthesisUtterance 实例，用于中止朗读 */
+
 let speechUtterance = null
 
-// ========== 计算属性 ==========
-/** 当前页的幻灯片数据 */
-const currentSlide = computed(() => slides.value[currentPage.value - 1])
+const lectureStatus = computed(() => normalizeLectureStatus(lectureStore.status))
+const statusMeta = computed(() => LECTURE_STATUS_MAP[lectureStatus.value] || LECTURE_STATUS_MAP[LECTURE_STATE.IDLE])
+const currentPage = computed(() => lectureStore.currentPage)
 const totalPages = computed(() => slides.value.length)
-/** 讲课整体进度百分比（用于进度条展示） */
-const progressPercent = computed(() =>
-  totalPages.value > 0 ? Math.round((currentPage.value / totalPages.value) * 100) : 0
-)
-/** 状态小标签文本，映射 LECTURE_STATE 枚举 */
-const stateLabel = computed(() => {
-  const labels = { idle: '未开始', playing: '讲课中', paused: '已暂停', finished: '已完成' }
-  return labels[lectureState.value] || ''
+const currentSlide = computed(() => slides.value[currentPage.value - 1] || null)
+const progressPercent = computed(() => {
+  if (!totalPages.value) {
+    return 0
+  }
+  return Math.round((currentPage.value / totalPages.value) * 100)
 })
+const errorMsg = computed(() => lectureStore.errorMessage)
 
-// Markdown 渲染：将问答文本转为 HTML，开启换行支持
 const renderMd = text => {
   if (!text) return ''
   return marked.parse(text, { breaks: true })
 }
 
-// ========== 讲课流程 ==========
-/**
- * 开始讲课：调用 /lecture/start 接口，获取 sessionId
- * 若后端返回 currentNode 则定位到断点继续页
- */
-const startLecture = async () => {
+const clearError = () => {
+  lectureStore.setErrorMessage('')
+}
+
+const showError = (error, fallback) => {
+  lectureStore.setErrorMessage(getErrorMessage(error, fallback))
+}
+
+const syncCurrentNodeWithSlide = page => {
+  const slide = slides.value[page - 1]
+  if (!slide) {
+    return
+  }
+
+  lectureStore.setCurrentNode({
+    nodeId: slide.nodeId || slide.id,
+    pageIndex: slide.pageIndex || page,
+    content: slide.content,
+    audioUrl: slide.audioUrl || null,
+  })
+}
+
+const loadSlides = async () => {
+  lectureStore.setLoading(true)
+  clearError()
+
   try {
-    const res = await request.post(LECTURE_API.START, { coursewareId })
-    if (res.code === 0) {
-      sessionId.value = res.data.sessionId
-      lectureState.value = LECTURE_STATE.PLAYING
-      // 如果返回了当前 node，定位到对应页
-      if (res.data.currentNode?.pageIndex) {
-        currentPage.value = res.data.currentNode.pageIndex
-      }
-    } else {
-      errorMsg.value = res.message || '开始讲课失败'
+    const response = await getCoursewareScript(coursewareId)
+    const segments = response.data?.segments || []
+
+    if (!segments.length) {
+      slides.value = []
+      showError(null, '讲稿数据为空，请先生成讲稿')
+      return false
     }
-  } catch {
-    errorMsg.value = '网络错误，无法开始讲课'
+
+    slides.value = segments
+    lectureStore.setCurrentPage(1)
+    syncCurrentNodeWithSlide(1)
+    return true
+  } catch (error) {
+    slides.value = []
+    showError(error, '无法加载讲稿数据')
+    return false
+  } finally {
+    lectureStore.setLoading(false)
   }
 }
 
-/**
- * 暂停讲课：先停止 TTS，再请求后端更改状态
- * 即使网络请求失败也允许本地过渡到暂停
- */
-const pauseLecture = async () => {
+const startLectureSession = async () => {
+  lectureStore.setLoading(true)
+  clearError()
+
+  try {
+    lectureStore.setCoursewareId(coursewareId)
+    const response = await startLecture({ coursewareId })
+    lectureStore.syncFromStartResponse({
+      ...response.data,
+      coursewareId,
+    })
+    if (!response.data?.currentNode?.pageIndex) {
+      syncCurrentNodeWithSlide(currentPage.value)
+    }
+  } catch (error) {
+    showError(error, '无法开始讲课')
+  } finally {
+    lectureStore.setLoading(false)
+  }
+}
+
+const handlePauseLecture = async () => {
+  if (!lectureStore.sessionId) {
+    return
+  }
+
+  lectureStore.setLoading(true)
+  clearError()
   stopSpeech()
+
   try {
-    await request.post(LECTURE_API.PAUSE(sessionId.value))
-  } catch {
-    // 即使网络失败也允许本地暂停
+    const response = await pauseLecture(lectureStore.sessionId)
+    lectureStore.setStatus(response.data?.status)
+  } catch (error) {
+    showError(error, '暂停讲课失败')
+  } finally {
+    lectureStore.setLoading(false)
   }
-  lectureState.value = LECTURE_STATE.PAUSED
-  courseStore.currentSession && (courseStore.currentSession.status = 'paused')
 }
 
-/**
- * 继续讲课：同步后端状态，并将页码对齐到后端返回的 currentNode
- */
-const resumeLecture = async () => {
+const handleResumeLecture = async () => {
+  if (!lectureStore.sessionId) {
+    return
+  }
+
+  lectureStore.setLoading(true)
+  clearError()
+
   try {
-    const res = await request.post(LECTURE_API.RESUME, { sessionId: sessionId.value })
-    if (res.code === 0 && res.data?.currentNode?.pageIndex) {
-      currentPage.value = res.data.currentNode.pageIndex
+    const response = await resumeLecture({ sessionId: lectureStore.sessionId })
+    lectureStore.syncFromStartResponse({
+      ...response.data,
+      coursewareId,
+    })
+    if (!response.data?.currentNode?.pageIndex) {
+      syncCurrentNodeWithSlide(currentPage.value)
     }
-  } catch {
-    // 网络失败时本地恢复
+  } catch (error) {
+    showError(error, '恢复讲课失败')
+  } finally {
+    lectureStore.setLoading(false)
   }
-  lectureState.value = LECTURE_STATE.PLAYING
-  courseStore.currentSession && (courseStore.currentSession.status = 'playing')
 }
 
-// ========== 翻页 ==========
-/** 上一页（同时停止当前 TTS） */
 const previousSlide = () => {
-  if (currentPage.value > 1) {
-    currentPage.value--
-    stopSpeech()
+  if (currentPage.value <= 1) {
+    return
   }
+
+  lectureStore.setCurrentPage(currentPage.value - 1)
+  syncCurrentNodeWithSlide(currentPage.value)
+  stopSpeech()
 }
 
-/** 下一页；已到最后一张时转为 finished 状态 */
 const nextSlide = () => {
-  if (currentPage.value < totalPages.value) {
-    currentPage.value++
+  if (currentPage.value >= totalPages.value) {
     stopSpeech()
-  } else {
-    lectureState.value = LECTURE_STATE.FINISHED
-    stopSpeech()
+    return
   }
+
+  lectureStore.setCurrentPage(currentPage.value + 1)
+  syncCurrentNodeWithSlide(currentPage.value)
+  stopSpeech()
 }
 
-// ========== TTS 语音合成 ==========
-/** 切换朗读状态 */
 const toggleSpeech = () => {
   if (isSpeaking.value) {
     stopSpeech()
-  } else {
-    speakCurrent()
+    return
   }
+
+  speakCurrent()
 }
 
-/** 使用 Web Speech API 朗读当前幻灯片文本，中文语谷制定 */
 const speakCurrent = () => {
   const text = currentSlide.value?.content
-  if (!text || !globalThis.speechSynthesis) return
+  if (!text || !globalThis.speechSynthesis) {
+    return
+  }
 
   stopSpeech()
   speechUtterance = new SpeechSynthesisUtterance(text)
   speechUtterance.lang = 'zh-CN'
   speechUtterance.rate = 1
-  speechUtterance.onend = () => { isSpeaking.value = false }
-  speechUtterance.onerror = () => { isSpeaking.value = false }
+  speechUtterance.onend = () => {
+    isSpeaking.value = false
+  }
+  speechUtterance.onerror = () => {
+    isSpeaking.value = false
+  }
+
   globalThis.speechSynthesis.speak(speechUtterance)
   isSpeaking.value = true
 }
 
-/** 停止朗读并清除状态 */
 const stopSpeech = () => {
   if (globalThis.speechSynthesis) {
     globalThis.speechSynthesis.cancel()
@@ -264,42 +305,42 @@ const stopSpeech = () => {
   isSpeaking.value = false
 }
 
-// ========== 问答 ==========
-/**
- * 提交文字问题
- * 展示「正在思考...」占位文本，接口返回后更新到实际答案
- */
 const submitQuestion = async () => {
-  const q = question.value.trim()
-  if (!q || isAsking.value) return
+  const normalizedQuestion = question.value.trim()
+  if (!normalizedQuestion || isAsking.value || !lectureStore.sessionId) {
+    return
+  }
 
   isAsking.value = true
-  const qaItem = { id: Date.now(), question: q, answer: '正在思考...', evidence: [] }
+  clearError()
+  const qaItem = {
+    id: Date.now(),
+    question: normalizedQuestion,
+    answer: '正在思考...',
+    evidence: [],
+  }
+
   qaList.value.push(qaItem)
   question.value = ''
   scrollQAToBottom()
 
   try {
-    const res = await request.post(QA_API.ASK_TEXT, {
-      sessionId: sessionId.value,
-      question: q,
+    const response = await askText({
+      sessionId: lectureStore.sessionId,
+      question: normalizedQuestion,
     })
-    if (res.code === 0) {
-      qaItem.answer = res.data.answer || '暂无答案'
-      qaItem.evidence = res.data.evidence || []
-    } else {
-      qaItem.answer = res.message || '获取答案失败'
-    }
-  } catch {
-    qaItem.answer = '网络错误，请稍后重试'
+    qaItem.answer = response.data?.answer || '暂无答案'
+    qaItem.evidence = response.data?.evidence || []
+  } catch (error) {
+    const message = getErrorMessage(error, '提问失败，请稍后重试')
+    qaItem.answer = message
+    showError(error, '提问失败，请稍后重试')
   } finally {
     isAsking.value = false
-    courseStore.addQARecord({ question: q, answer: qaItem.answer })
     scrollQAToBottom()
   }
 }
 
-/** 问答列表滚动到底部，补充新条目后自动升至可见 */
 const scrollQAToBottom = () => {
   nextTick(() => {
     if (qaHistoryRef.value) {
@@ -308,30 +349,18 @@ const scrollQAToBottom = () => {
   })
 }
 
-// ========== 初始化 ==========
-/** 加载讲稿片段，将幻灯片数据映射到 slides */
-const loadSlides = async () => {
-  try {
-    const res = await request.get(SCRIPT_API.GET(coursewareId))
-    if (res.code === 0 && res.data?.segments) {
-      slides.value = res.data.segments
-    } else {
-      errorMsg.value = '讲稿数据为空，请先生成讲稿'
-    }
-  } catch {
-    errorMsg.value = '无法加载讲稿数据'
-  }
-}
-
 onMounted(async () => {
-  await loadSlides()
-  if (slides.value.length > 0) {
-    await startLecture()
+  lectureStore.reset()
+  lectureStore.setCoursewareId(coursewareId)
+  const loaded = await loadSlides()
+  if (loaded) {
+    await startLectureSession()
   }
 })
 
 onUnmounted(() => {
   stopSpeech()
+  lectureStore.reset()
 })
 </script>
 
@@ -379,10 +408,12 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
   font-weight: 600;
 }
-.state-badge.playing { background: rgba(82, 196, 26, 0.15); color: #389e0d; }
-.state-badge.paused { background: rgba(250, 173, 20, 0.15); color: #d48806; }
-.state-badge.finished { background: rgba(102, 126, 234, 0.15); color: var(--primary-color); }
-.state-badge.idle { background: var(--bg-secondary); color: var(--text-secondary); }
+.state-badge.state-playing { background: rgba(82, 196, 26, 0.15); color: #389e0d; }
+.state-badge.state-interrupted,
+.state-badge.state-answering { background: rgba(250, 173, 20, 0.15); color: #d48806; }
+.state-badge.state-resuming { background: rgba(102, 126, 234, 0.15); color: var(--primary-color); }
+.state-badge.state-ended { background: rgba(0, 0, 0, 0.06); color: var(--text-secondary); }
+.state-badge.state-idle { background: var(--bg-secondary); color: var(--text-secondary); }
 
 .slide-body {
   font-size: var(--font-size-md);
@@ -463,7 +494,6 @@ onUnmounted(() => {
   transition: width 0.3s ease;
 }
 
-/* 问答区域 */
 .qa-section {
   flex: 1;
   display: flex;
@@ -579,7 +609,6 @@ onUnmounted(() => {
   z-index: 100;
 }
 
-/* 移动端适配 */
 @media (max-width: 768px) {
   .lecture-page {
     flex-direction: column;

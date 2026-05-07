@@ -1,35 +1,72 @@
-/**
- * 讲课主界面相关的常量
- */
 export const LECTURE_STATE = {
-  IDLE: 'idle', // 未开始
-  PLAYING: 'playing', // 播放中
-  PAUSED: 'paused', // 暂停
-  FINISHED: 'finished', // 完成
+  IDLE: 'IDLE',
+  PLAYING: 'PLAYING',
+  INTERRUPTED: 'INTERRUPTED',
+  ANSWERING: 'ANSWERING',
+  RESUMING: 'RESUMING',
+  ENDED: 'ENDED',
 }
 
-/**
- * 问答相关常量
- */
-export const QA_TYPE = {
-  TEXT: 'text', // 文本问答
-  VOICE: 'voice', // 语音问答
+const LEGACY_STATUS_MAP = {
+  idle: LECTURE_STATE.IDLE,
+  playing: LECTURE_STATE.PLAYING,
+  paused: LECTURE_STATE.INTERRUPTED,
+  interrupted: LECTURE_STATE.INTERRUPTED,
+  answering: LECTURE_STATE.ANSWERING,
+  resuming: LECTURE_STATE.RESUMING,
+  finished: LECTURE_STATE.ENDED,
+  ended: LECTURE_STATE.ENDED,
+  ACTIVE: LECTURE_STATE.PLAYING,
+  PAUSED: LECTURE_STATE.INTERRUPTED,
+  FINISHED: LECTURE_STATE.ENDED,
 }
 
-/**
- * 理解度等级
- */
-export const COMPREHENSION_LEVEL = {
-  LOW: 'low', // 低
-  MEDIUM: 'medium', // 中
-  HIGH: 'high', // 高
+export const LECTURE_STATUS_MAP = {
+  [LECTURE_STATE.IDLE]: {
+    text: '待开始',
+    className: 'state-idle',
+    color: 'info',
+  },
+  [LECTURE_STATE.PLAYING]: {
+    text: '讲解中',
+    className: 'state-playing',
+    color: 'success',
+  },
+  [LECTURE_STATE.INTERRUPTED]: {
+    text: '倾听中',
+    className: 'state-interrupted',
+    color: 'warning',
+  },
+  [LECTURE_STATE.ANSWERING]: {
+    text: '答疑中',
+    className: 'state-answering',
+    color: 'warning',
+  },
+  [LECTURE_STATE.RESUMING]: {
+    text: '恢复中',
+    className: 'state-resuming',
+    color: 'info',
+  },
+  [LECTURE_STATE.ENDED]: {
+    text: '已结束',
+    className: 'state-ended',
+    color: 'default',
+  },
 }
 
-/**
- * 讲解节奏
- */
-export const PACE_MODE = {
-  FAST: 'fast', // 快速
-  NORMAL: 'normal', // 正常
-  SLOW: 'slow', // 细讲
+export function normalizeLectureStatus(status) {
+  if (!status) {
+    return LECTURE_STATE.IDLE
+  }
+
+  if (Object.values(LECTURE_STATE).includes(status)) {
+    return status
+  }
+
+  const normalized = String(status).trim()
+  if (Object.values(LECTURE_STATE).includes(normalized)) {
+    return normalized
+  }
+
+  return LEGACY_STATUS_MAP[normalized] || LEGACY_STATUS_MAP[normalized.toLowerCase()] || LECTURE_STATE.IDLE
 }
