@@ -1,23 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
-class BaseResponse(BaseModel):
-    code: int = 0
-    message: str = "success"
-    data: Any | None = None
-
-
-def success_response(data: Any = None) -> BaseResponse:
-    return BaseResponse(code=0, message="success", data=data)
-
-
-def error_response(code: int, message: str) -> BaseResponse:
-    return BaseResponse(code=code, message=message, data=None)
+from app.schemas.common import BaseResponse, error_response, success_response
 
 
 class PageContent(BaseModel):
@@ -38,13 +25,11 @@ class ParseResult(BaseModel):
 class ParseRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
-    courseware_id: str = Field(..., alias="coursewareId")
+    courseware_id: str = Field(..., min_length=1, alias="coursewareId")
     storage: str | None = None
     key: str | None = None
     file_name: str | None = Field(default=None, alias="fileName")
     content_type: str | None = Field(default=None, alias="contentType")
-
-    # Legacy compatibility fields. New requests should use storage/key/fileName/contentType.
     file_url: str | None = Field(default=None, alias="fileUrl")
     file_path: str | None = Field(default=None, alias="filePath")
 
