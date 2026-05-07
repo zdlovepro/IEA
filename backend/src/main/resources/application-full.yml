@@ -35,6 +35,12 @@ python:
 tts:
   enabled: ${TTS_ENABLED:false}
   aliyun:
-    app-key: ${TTS_ALIYUN_APP_KEY:}
-    access-key-id: ${TTS_ALIYUN_ACCESS_KEY_ID:}
-    access-key-secret: ${TTS_ALIYUN_ACCESS_KEY_SECRET:}
+    api-key: ${TTS_DASHSCOPE_API_KEY:${DASHSCOPE_API_KEY:}}
+    model: ${TTS_DASHSCOPE_MODEL:cosyvoice-v3-flash}
+    voice: ${TTS_DASHSCOPE_VOICE:longanyang}
+    websocket-url: ${TTS_DASHSCOPE_WEBSOCKET_URL:wss://dashscope.aliyuncs.com/api-ws/v1/inference}
+    format: ${TTS_DASHSCOPE_FORMAT:mp3}
+    sample-rate: ${TTS_DASHSCOPE_SAMPLE_RATE:24000}
+    speech-rate: ${TTS_DASHSCOPE_SPEECH_RATE:0}
+    pitch-rate: ${TTS_DASHSCOPE_PITCH_RATE:0}
+    volume: ${TTS_DASHSCOPE_VOLUME:50}

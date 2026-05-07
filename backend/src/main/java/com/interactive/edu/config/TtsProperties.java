@@ -22,19 +22,14 @@ public class TtsProperties {
     @Data
     public static class Aliyun {
 
-        private String appKey;
-        private String accessKeyId;
-        private String accessKeySecret;
-        private String endpoint = "https://nls-gateway.cn-shanghai.aliyuncs.com";
-        private String voice = "aixia";
-        private int sampleRate = 16000;
-        private String format = "wav";
+        private String apiKey;
+        private String model = "cosyvoice-v3-flash";
+        private String websocketUrl = "wss://dashscope.aliyuncs.com/api-ws/v1/inference";
+        private String voice = "longanyang";
+        private int sampleRate = 24000;
+        private String format = "mp3";
         private int speechRate = 0;
         private int pitchRate = 0;
         private int volume = 50;
-        private int connectTimeoutMs = 5000;
-        private int readTimeoutMs = 30000;
-        private String tokenPath = "/token";
-        private String ttsPath = "/stream/v1/tts";
     }
 }

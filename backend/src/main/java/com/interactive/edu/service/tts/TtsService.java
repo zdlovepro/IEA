@@ -40,7 +40,7 @@ public class TtsService {
         }
 
         if (!hasAliyunCredentials()) {
-            log.warn("TTS is enabled but Aliyun credentials are incomplete. Skip audio generation.");
+            log.warn("TTS is enabled but DashScope API key is missing. Skip audio generation.");
             return null;
         }
 
@@ -75,9 +75,7 @@ public class TtsService {
     private boolean hasAliyunCredentials() {
         TtsProperties.Aliyun aliyun = ttsProperties.getAliyun();
         return aliyun != null
-                && StringUtils.hasText(aliyun.getAppKey())
-                && StringUtils.hasText(aliyun.getAccessKeyId())
-                && StringUtils.hasText(aliyun.getAccessKeySecret());
+                && StringUtils.hasText(aliyun.getApiKey());
     }
 
     private String normalizeText(String text) {
