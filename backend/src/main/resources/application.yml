@@ -23,5 +23,6 @@ logging:
 python:
   client:
     parse-path: /python/v1/parse
+    script-generate-path: /python/v1/script/generate
     connect-timeout: 5s
     read-timeout: 30s

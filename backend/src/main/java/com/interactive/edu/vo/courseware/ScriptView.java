@@ -6,6 +6,8 @@ public record ScriptView(
         String coursewareId,
         List<OutlineItemView> outline,
         List<ScriptSegmentView> segments,
-        String status
+        String status,
+        String opening,
+        String closing
 ) {
 }

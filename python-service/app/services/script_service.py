@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from langchain.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
 from pydantic import ValidationError
@@ -68,9 +69,14 @@ def generate_script(request: ScriptGenerateRequest) -> ScriptGenerateResponse:
     logger.info("Script generation started. coursewareId=%s pages=%s", request.courseware_id, total_pages)
 
     if not settings.LLM_API_KEY:
-        logger.warning("LLM API key is missing. Use fallback script. coursewareId=%s pages=%s", request.courseware_id, total_pages)
+        logger.warning(
+            "LLM API key is missing. Use fallback script. coursewareId=%s pages=%s",
+            request.courseware_id,
+            total_pages,
+        )
         return build_fallback_script(request)
 
+    raw_output = ""
     try:
         prompt_messages = _PROMPT_TEMPLATE.format_messages(
             courseware_id=request.courseware_id,
@@ -80,16 +86,17 @@ def generate_script(request: ScriptGenerateRequest) -> ScriptGenerateResponse:
             pages_content=_format_pages_content(request),
             json_schema=_JSON_SCHEMA_EXAMPLE,
         )
-        raw_output = get_llm_client().invoke(prompt_messages)
+        raw_output = get_llm_client().invoke(prompt_messages) or ""
         result = parse_model_output(raw_output, request.courseware_id)
         logger.info("Script generation completed. coursewareId=%s pages=%s", request.courseware_id, len(result.pages))
         return result
-    except (ModelOutputException, ValidationError, json.JSONDecodeError) as exc:
+    except ModelOutputException as exc:
         logger.warning(
-            "Model output invalid, fallback applied. coursewareId=%s pages=%s reason=%s",
+            "Model output invalid, fallback applied. coursewareId=%s pages=%s reason=%s preview=%r",
             request.courseware_id,
             total_pages,
-            type(exc).__name__,
+            str(exc),
+            _truncate_for_log(raw_output),
         )
     except AppException as exc:
         logger.warning(
@@ -105,23 +112,31 @@ def generate_script(request: ScriptGenerateRequest) -> ScriptGenerateResponse:
 
 
 def extract_json_payload(raw_output: str) -> str:
-    fenced_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw_output, re.IGNORECASE)
+    stripped = (raw_output or "").strip()
+    if not stripped:
+        return stripped
+
+    fenced_match = re.search(r"```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)```", stripped)
     if fenced_match:
-        return fenced_match.group(1).strip()
+        fenced_content = fenced_match.group(1).strip()
+        return _extract_first_json_object(fenced_content) or fenced_content
 
-    object_match = re.search(r"(\{[\s\S]*\})", raw_output)
-    if object_match:
-        return object_match.group(1).strip()
-
-    return raw_output.strip()
+    return _extract_first_json_object(stripped) or stripped
 
 
 def parse_model_output(raw_output: str, courseware_id: str) -> ScriptGenerateResponse:
     json_payload = extract_json_payload(raw_output)
-    data = json.loads(json_payload)
-    data["courseware_id"] = courseware_id
     try:
-        return ScriptGenerateResponse(**data)
+        data = json.loads(json_payload)
+    except json.JSONDecodeError as exc:
+        raise ModelOutputException("模型输出不是合法 JSON") from exc
+
+    if not isinstance(data, dict):
+        raise ModelOutputException("模型输出 JSON 顶层必须是 object")
+
+    normalized = _normalize_model_response_data(data, courseware_id)
+    try:
+        return ScriptGenerateResponse(**normalized)
     except ValidationError as exc:
         raise ModelOutputException("模型输出字段校验失败") from exc
 
@@ -135,7 +150,8 @@ def build_fallback_script(request: ScriptGenerateRequest) -> ScriptGenerateRespo
         title = _resolve_title(page.title, page.page_index)
         condensed_text = _condense_text(page.text_content)
         keywords_text = _format_keywords(page.keywords)
-        transition = _build_transition(index, total_pages, request.pages[index].title if index < total_pages else None)
+        next_title = request.pages[index].title if index < total_pages else None
+        transition = _build_transition(index, total_pages, next_title)
 
         if condensed_text:
             script = (
@@ -175,13 +191,105 @@ def build_fallback_script(request: ScriptGenerateRequest) -> ScriptGenerateRespo
 
 
 def _format_pages_content(request: ScriptGenerateRequest) -> str:
+    total_pages = len(request.pages)
     lines: list[str] = []
     for page in request.pages:
-        lines.append(f"--- 第 {page.page_index} 页 / 共 {len(request.pages)} 页 ---")
+        lines.append(f"--- 第 {page.page_index} 页 / 共 {total_pages} 页 ---")
         lines.append(f"标题：{_resolve_title(page.title, page.page_index)}")
         lines.append(f"正文：{_clean_text(page.text_content) or '（本页正文为空）'}")
         lines.append(f"关键词：{_format_keywords(page.keywords)}")
     return "\n".join(lines)
+
+
+def _normalize_model_response_data(data: dict[str, Any], courseware_id: str) -> dict[str, Any]:
+    pages = data.get("pages")
+    if not isinstance(pages, list) or not pages:
+        raise ModelOutputException("模型输出缺少有效的 pages 列表")
+
+    normalized_pages: list[dict[str, Any]] = []
+    total_pages = len(pages)
+    for index, page in enumerate(pages, start=1):
+        if not isinstance(page, dict):
+            raise ModelOutputException("模型输出中的 page 项必须是 object")
+
+        page_index = _parse_page_index(page.get("page_index"))
+        script = _clean_text(str(page.get("script", "")))
+        if not script:
+            raise ModelOutputException("模型输出中的 script 不能为空")
+
+        # 当模型漏掉 transition 时，这里补一个默认过渡语，优先保证整份讲稿仍可朗读。
+        transition = _clean_text(str(page.get("transition", ""))) or _build_transition(
+            index,
+            total_pages,
+            None,
+        )
+
+        normalized_pages.append(
+            {
+                "page_index": page_index,
+                "script": script,
+                "transition": transition,
+            }
+        )
+
+    return {
+        "courseware_id": courseware_id,
+        "opening": _clean_text(str(data.get("opening", ""))),
+        "pages": normalized_pages,
+        "closing": _clean_text(str(data.get("closing", ""))),
+    }
+
+
+def _parse_page_index(raw_value: Any) -> int:
+    try:
+        page_index = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ModelOutputException("模型输出中的 page_index 必须是正整数") from exc
+
+    if page_index <= 0:
+        raise ModelOutputException("模型输出中的 page_index 必须是正整数")
+    return page_index
+
+
+def _extract_first_json_object(text: str) -> str | None:
+    start_index = -1
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index, char in enumerate(text):
+        if start_index < 0:
+            if char == "{":
+                start_index = index
+                depth = 1
+            continue
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start_index : index + 1].strip()
+
+    return None
+
+
+def _truncate_for_log(raw_output: str, limit: int = 200) -> str:
+    normalized = (raw_output or "").strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit].rstrip() + "..."
 
 
 def _resolve_subject(subject: str | None) -> str:

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from app.clients import llm_client as llm_client_module
 from app.core.config import settings
+from app.core.exceptions import ModelOutputException
 from app.schemas.script import PageContent, ScriptGenerateRequest, ScriptGenerateResponse
 from app.services import script_service
-from app.services.script_service import extract_json_payload, generate_script
+from app.services.script_service import extract_json_payload, generate_script, parse_model_output
 
 
 def _build_request(
@@ -28,7 +31,23 @@ def _build_request(
     )
 
 
-def test_extract_json_payload_from_code_fence():
+def test_extract_json_payload_supports_pure_json():
+    raw_output = """
+    {
+      "courseware_id": "cware_script_1",
+      "opening": "开场",
+      "pages": [{"page_index": 1, "script": "讲解", "transition": "过渡"}],
+      "closing": "结尾"
+    }
+    """
+
+    extracted = extract_json_payload(raw_output)
+
+    assert extracted.startswith("{")
+    assert '"courseware_id": "cware_script_1"' in extracted
+
+
+def test_extract_json_payload_supports_json_fence():
     raw_output = """```json
 {
   "courseware_id": "cware_script_1",
@@ -41,7 +60,127 @@ def test_extract_json_payload_from_code_fence():
     extracted = extract_json_payload(raw_output)
 
     assert extracted.startswith("{")
-    assert '"courseware_id": "cware_script_1"' in extracted
+    assert '"opening": "开场"' in extracted
+
+
+def test_extract_json_payload_supports_plain_fence():
+    raw_output = """```
+{
+  "courseware_id": "cware_script_1",
+  "opening": "开场",
+  "pages": [{"page_index": 1, "script": "讲解", "transition": "过渡"}],
+  "closing": "结尾"
+}
+```"""
+
+    extracted = extract_json_payload(raw_output)
+
+    assert extracted.startswith("{")
+    assert '"closing": "结尾"' in extracted
+
+
+def test_extract_json_payload_supports_explanatory_text():
+    raw_output = """
+    下面是整理后的 JSON，请直接使用：
+    {
+      "courseware_id": "cware_script_1",
+      "opening": "开场",
+      "pages": [{"page_index": 1, "script": "讲解", "transition": "过渡"}],
+      "closing": "结尾"
+    }
+    以上就是结果。
+    """
+
+    extracted = extract_json_payload(raw_output)
+
+    assert extracted.startswith("{")
+    assert extracted.endswith("}")
+    assert '"pages":' in extracted
+
+
+def test_extract_json_payload_non_json_returns_stripped_text():
+    raw_output = "这不是 JSON，只是一段解释文字。"
+
+    extracted = extract_json_payload(raw_output)
+
+    assert extracted == raw_output
+
+
+def test_parse_model_output_overrides_courseware_id_and_fills_transition():
+    raw_output = """
+    {
+      "courseware_id": "wrong_id",
+      "opening": "同学们好，我们先建立整体认识。",
+      "pages": [{"page_index": 1, "script": "这一页先介绍递归的基本定义。", "transition": "   "}],
+      "closing": "今天的内容就梳理到这里。"
+    }
+    """
+
+    result = parse_model_output(raw_output, "cware_script_1")
+
+    assert result.courseware_id == "cware_script_1"
+    assert result.pages[0].transition
+    assert ScriptGenerateResponse.model_validate(result.model_dump()) == result
+
+
+def test_parse_model_output_non_json_raises_model_output_exception():
+    with pytest.raises(ModelOutputException, match="合法 JSON"):
+        parse_model_output("not json at all", "cware_script_1")
+
+
+def test_parse_model_output_missing_pages_raises_model_output_exception():
+    raw_output = """
+    {
+      "courseware_id": "cware_script_1",
+      "opening": "开场",
+      "closing": "结尾"
+    }
+    """
+
+    with pytest.raises(ModelOutputException, match="pages"):
+        parse_model_output(raw_output, "cware_script_1")
+
+
+def test_parse_model_output_empty_pages_raises_model_output_exception():
+    raw_output = """
+    {
+      "courseware_id": "cware_script_1",
+      "opening": "开场",
+      "pages": [],
+      "closing": "结尾"
+    }
+    """
+
+    with pytest.raises(ModelOutputException, match="pages"):
+        parse_model_output(raw_output, "cware_script_1")
+
+
+def test_parse_model_output_empty_script_raises_model_output_exception():
+    raw_output = """
+    {
+      "courseware_id": "cware_script_1",
+      "opening": "开场",
+      "pages": [{"page_index": 1, "script": "   ", "transition": "过渡"}],
+      "closing": "结尾"
+    }
+    """
+
+    with pytest.raises(ModelOutputException, match="script"):
+        parse_model_output(raw_output, "cware_script_1")
+
+
+def test_parse_model_output_invalid_page_index_raises_model_output_exception():
+    raw_output = """
+    {
+      "courseware_id": "cware_script_1",
+      "opening": "开场",
+      "pages": [{"page_index": 0, "script": "讲解内容", "transition": "过渡"}],
+      "closing": "结尾"
+    }
+    """
+
+    with pytest.raises(ModelOutputException, match="page_index"):
+        parse_model_output(raw_output, "cware_script_1")
 
 
 def test_generate_script_falls_back_when_api_key_missing(monkeypatch):
@@ -148,6 +287,21 @@ def test_generate_script_prompt_contains_total_pages_and_page_content(monkeypatc
     assert "关键词：调用栈、返回" in captured["human"]
 
 
+def test_generate_script_falls_back_when_model_output_invalid(monkeypatch):
+    class _FakeLLMClient:
+        def invoke(self, _messages):
+            return "这里不是 JSON，只是一段坏掉的模型输出。"
+
+    monkeypatch.setattr(settings, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(script_service, "get_llm_client", lambda: _FakeLLMClient())
+
+    result = generate_script(_build_request())
+
+    assert isinstance(result, ScriptGenerateResponse)
+    assert result.courseware_id == "cware_script_1"
+    assert result.pages[0].script
+
+
 def test_generate_script_endpoint_returns_base_response_when_api_key_missing(request_app, monkeypatch):
     monkeypatch.setattr(settings, "LLM_API_KEY", "")
     monkeypatch.setattr(llm_client_module, "_llm_client", None)
@@ -176,7 +330,42 @@ def test_generate_script_endpoint_returns_base_response_when_api_key_missing(req
     assert payload["code"] == 0
     assert payload["message"] == "success"
     assert payload["data"]["courseware_id"] == "cware_script_api"
-    assert payload["data"]["opening"]
     assert payload["data"]["pages"][0]["page_index"] == 1
+    assert payload["data"]["pages"][0]["script"]
+
+
+def test_generate_script_endpoint_returns_base_response_when_model_output_invalid(request_app, monkeypatch):
+    class _FakeLLMClient:
+        def invoke(self, _messages):
+            return "不是 JSON"
+
+    monkeypatch.setattr(settings, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(script_service, "get_llm_client", lambda: _FakeLLMClient())
+
+    response = request_app(
+        "POST",
+        "/python/v1/script/generate",
+        json={
+            "coursewareId": "cware_script_api_bad",
+            "coursewareName": "图示示例",
+            "subject": "数学",
+            "pages": [
+                {
+                    "pageIndex": 1,
+                    "title": "基本概念",
+                    "textContent": "这一页介绍基本概念。",
+                    "keywords": ["概念"],
+                }
+            ],
+        },
+    )
+
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["code"] == 0
+    assert payload["message"] == "success"
+    assert payload["data"]["courseware_id"] == "cware_script_api_bad"
+    assert payload["data"]["opening"]
     assert payload["data"]["pages"][0]["script"]
     assert payload["data"]["closing"]

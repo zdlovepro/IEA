@@ -29,3 +29,8 @@ logging:
   level:
     root: INFO
     com.interactive.edu: INFO
+
+python:
+  client:
+    base-url: ${PYTHON_CLIENT_BASE_URL:http://localhost:8001}
+    script-generate-path: ${PYTHON_SCRIPT_GENERATE_PATH:/python/v1/script/generate}

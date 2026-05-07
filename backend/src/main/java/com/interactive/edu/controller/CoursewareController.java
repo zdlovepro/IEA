@@ -63,10 +63,10 @@ public class CoursewareController {
     public BaseResponse<Map<String, String>> generateScript(
             @PathVariable("coursewareId") @NotBlank String coursewareId
     ) {
-        coursewareService.triggerScriptGeneration(coursewareId);
+        String status = coursewareService.triggerScriptGeneration(coursewareId);
         return BaseResponse.ok(Map.of(
                 "coursewareId", coursewareId,
-                "status", coursewareService.getScriptStatus(coursewareId)
+                "status", status
         ));
     }
 }

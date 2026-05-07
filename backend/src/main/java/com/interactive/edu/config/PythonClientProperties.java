@@ -14,6 +14,9 @@ public class PythonClientProperties {
     /** Parse API path, e.g. /python/v1/parse */
     private String parsePath = "/python/v1/parse";
 
+    /** Script generation API path, e.g. /python/v1/script/generate */
+    private String scriptGeneratePath = "/python/v1/script/generate";
+
     /** HTTP connect timeout. */
     private Duration connectTimeout = Duration.ofSeconds(5);
 
