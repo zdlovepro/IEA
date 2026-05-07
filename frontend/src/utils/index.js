@@ -1,7 +1,9 @@
 // 通用工具函数
 
 /**
- * 防抖函数
+ * 防抖：在 wait 毫秒内多次触发时延迟执行，适用于搜索输入等高频事件
+ * @param {Function} func - 待防抖的函数
+ * @param {number} wait - 延迟时间（ms）
  */
 export function debounce(func, wait) {
   let timeout
@@ -16,7 +18,9 @@ export function debounce(func, wait) {
 }
 
 /**
- * 节流函数
+ * 节流：在 limit 毫秒内至多执行一次，适用于滚动、resize 等连续触发事件
+ * @param {Function} func - 待节流的函数
+ * @param {number} limit - 间隔时间（ms）
  */
 export function throttle(func, limit) {
   let inThrottle

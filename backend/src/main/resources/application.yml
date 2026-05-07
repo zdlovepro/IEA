@@ -1,8 +1,16 @@
 spring:
   application:
     name: interactive-edu-backend
+  config:
+    import:
+      - optional:file:.env[.properties]
+      - optional:file:../.env[.properties]
   profiles:
-    active: dev
+    default: local
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
 
 server:
   port: 8080
@@ -11,3 +19,9 @@ logging:
   level:
     root: INFO
     com.interactive.edu: DEBUG
+
+python:
+  client:
+    parse-path: /python/v1/parse
+    connect-timeout: 5s
+    read-timeout: 30s

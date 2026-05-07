@@ -13,6 +13,8 @@
 </template>
 
 <script setup>
+// 根组件：提供三段式布局（固定顶栏 Header + 可滚动主内容区 + 固定底栏 TabBar）
+// router-view 使用 fade 过渡动画，key 绑定完整路径以确保同名路由切换时也能触发动画
 import Header from '@/components/Layout/Header.vue'
 import TabBar from '@/components/Layout/TabBar.vue'
 </script>

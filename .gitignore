@@ -179,6 +179,9 @@ bootstrap-local.yml
 # 但保留示例配置
 !application-example.yml
 !application-local.example.yml
+!backend/src/main/resources/application.yml
+!backend/src/main/resources/application-local.yml
+!backend/src/main/resources/application-full.yml
 !.env.example
 !*.example.*
 

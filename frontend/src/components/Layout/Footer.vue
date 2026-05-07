@@ -2,7 +2,7 @@
   <footer class="footer">
     <div class="footer-container">
       <div class="footer-content">
-        <p class="footer-text">© 2026 SoftDesign. All rights reserved.</p>
+        <p class="footer-text">© 2026 Interactive-Edu-Agent. All rights reserved.</p>
         <div class="footer-links">
           <a href="#">关于项目</a>
           <span class="divider">|</span>

@@ -13,6 +13,12 @@
 </template>
 
 <script setup>
+/**
+ * 顶部导航栏组件
+ * - 左侧：可选返回按鈕 + 页面标题
+ * - 右侧：预留命名插槽uff08负责<slot name="right">）
+ * Props： title（页面标题）、showBack（是否显示返回按鈕）
+ */
 import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 
@@ -20,16 +26,19 @@ const router = useRouter()
 const route = useRoute()
 
 const props = defineProps({
+  /** 页面标题，显示在导航栏中央 */
   title: {
     type: String,
     default: 'AI 互动智课',
   },
+  /** 为 true 时展示返回按鈕（应用于设计详情、讲课等内层页面） */
   showBack: {
     type: Boolean,
     default: false,
   },
 })
 
+/** 执行浏览器历史负方向跳转 */
 const goBack = () => {
   router.back()
 }

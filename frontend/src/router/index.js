@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+// 首页直接引入（不懒加载），保证首屏速度
 import Home from '../views/Home.vue'
 
 const routes = [
@@ -13,6 +14,7 @@ const routes = [
   {
     path: '/upload',
     name: 'Upload',
+    // 非首屏路由均使用动态 import 懒加载，减小初始包体积
     component: () => import('../views/Upload.vue'),
     meta: {
       title: '上传课件',
@@ -65,10 +67,9 @@ const router = createRouter({
   routes,
 })
 
-// 路由守卫
+// 全局前置守卫：每次路由切换时同步更新浏览器标签页标题
 router.beforeEach((to, from, next) => {
-  // 设置页面标题
-  document.title = `${to.meta.title || 'SoftDesign'} - ${import.meta.env.VITE_APP_TITLE}`
+  document.title = `${to.meta.title || 'Interactive-Edu-Agent'} - ${import.meta.env.VITE_APP_TITLE}`
   next()
 })
 
