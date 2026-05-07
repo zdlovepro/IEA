@@ -136,6 +136,28 @@ class TtsServiceTest {
         verifyNoInteractions(storageService);
     }
 
+    @Test
+    @DisplayName("TTS 合成成功但存储上传失败时降级为 null")
+    void synthesizeToAudioUrl_uploadFailure_returnsNull() {
+        byte[] audioData = new byte[]{0x01, 0x02};
+        when(ttsClientProvider.getIfAvailable()).thenReturn(ttsClient);
+        when(storageServiceProvider.getIfAvailable()).thenReturn(storageService);
+        when(ttsClient.synthesize(any(TtsRequest.class))).thenReturn(TtsResult.builder()
+                .audioData(audioData)
+                .format("wav")
+                .sampleRate(16000)
+                .build());
+        when(storageService.generateObjectKey("wav")).thenReturn("tts-audio/test.wav");
+        when(storageService.uploadAndSign("tts-audio/test.wav", audioData, "wav", null))
+                .thenThrow(new IllegalStateException("disk full"));
+
+        assertThat(service.synthesizeToAudioUrl("讲稿内容")).isNull();
+
+        verify(ttsClient).synthesize(any(TtsRequest.class));
+        verify(storageService).generateObjectKey("wav");
+        verify(storageService).uploadAndSign("tts-audio/test.wav", audioData, "wav", null);
+    }
+
     private static TtsProperties buildProperties(boolean enabled, boolean withCredentials) {
         TtsProperties properties = new TtsProperties();
         properties.setEnabled(enabled);

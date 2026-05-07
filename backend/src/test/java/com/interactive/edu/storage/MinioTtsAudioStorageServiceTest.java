@@ -36,13 +36,15 @@ class MinioTtsAudioStorageServiceTest {
     private MinioClient minioClient;
 
     private MinioTtsAudioStorageService service;
+    private TtsProperties ttsProperties;
 
     @BeforeEach
     void setUp() {
         MinioProperties minioProperties = new MinioProperties();
         minioProperties.setBucket(BUCKET);
 
-        TtsProperties ttsProperties = new TtsProperties();
+        ttsProperties = new TtsProperties();
+        ttsProperties.setPresignedExpiryMinutes(90);
         // 默认 presignedExpiryMinutes = 60
 
         service = new MinioTtsAudioStorageService(minioClient, minioProperties, ttsProperties);
@@ -95,12 +97,28 @@ class MinioTtsAudioStorageServiceTest {
 
     @Test
     @DisplayName("uploadAndSign：自定义 expiryMins 时正常使用")
-    void uploadAndSign_customExpiry_callsMinioWithoutError() throws Exception {
+    void uploadAndSign_defaultExpiry_usesConfiguredValue() throws Exception {
+        when(minioClient.getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class))).thenReturn(FAKE_URL);
+
+        String url = service.uploadAndSign("tts-audio/2026/04/xxx.mp3", AUDIO_DATA, "mp3", null);
+
+        assertThat(url).isEqualTo(FAKE_URL);
+        ArgumentCaptor<GetPresignedObjectUrlArgs> captor = ArgumentCaptor.forClass(GetPresignedObjectUrlArgs.class);
+        verify(minioClient).getPresignedObjectUrl(captor.capture());
+        assertThat(captor.getValue().expiry()).isEqualTo(ttsProperties.getPresignedExpiryMinutes() * 60);
+    }
+
+    @Test
+    @DisplayName("uploadAndSign 自定义 expiryMins 时会覆盖默认有效期")
+    void uploadAndSign_customExpiry_overridesConfiguredValue() throws Exception {
         when(minioClient.getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class))).thenReturn(FAKE_URL);
 
         String url = service.uploadAndSign("tts-audio/2026/04/xxx.mp3", AUDIO_DATA, "mp3", 30);
 
         assertThat(url).isEqualTo(FAKE_URL);
+        ArgumentCaptor<GetPresignedObjectUrlArgs> captor = ArgumentCaptor.forClass(GetPresignedObjectUrlArgs.class);
+        verify(minioClient).getPresignedObjectUrl(captor.capture());
+        assertThat(captor.getValue().expiry()).isEqualTo(30 * 60);
     }
 
     @Test
