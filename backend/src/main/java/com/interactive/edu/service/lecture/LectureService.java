@@ -1,8 +1,12 @@
 package com.interactive.edu.service.lecture;
 
+import com.interactive.edu.enums.LectureSessionStatus;
 import com.interactive.edu.service.courseware.CoursewareService;
+import com.interactive.edu.vo.lecture.LectureSessionView;
+import com.interactive.edu.vo.lecture.SessionStatusView;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -14,6 +18,7 @@ import java.util.concurrent.ConcurrentMap;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class LectureService {
 
     private final CoursewareService coursewareService;
@@ -23,16 +28,19 @@ public class LectureService {
         if (!StringUtils.hasText(coursewareId)) {
             throw new IllegalArgumentException("coursewareId 不能为空");
         }
-        coursewareService.requireScript(coursewareId);
 
+        coursewareService.requireScript(coursewareId);
         String sessionId = "sess_" + UUID.randomUUID().toString().replace("-", "");
         String resolvedUserId = StringUtils.hasText(userId) ? userId.trim() : "demo_user";
+
         SessionState state = new SessionState(sessionId, coursewareId, resolvedUserId);
+        state.setStatus(LectureSessionStatus.PLAYING.name());
         sessionStore.put(sessionId, state);
+        log.info("Lecture started. sessionId={}, coursewareId={}, userId={}", sessionId, coursewareId, resolvedUserId);
 
         return new LectureSessionView(
                 sessionId,
-                "PLAYING",
+                state.getStatus(),
                 coursewareService.getCurrentNode(coursewareId, state.getCurrentPageIndex())
         );
     }
@@ -41,9 +49,11 @@ public class LectureService {
         if (!StringUtils.hasText(sessionId)) {
             throw new IllegalArgumentException("sessionId 不能为空");
         }
+
         SessionState session = requireSession(sessionId);
-        session.setStatus("PAUSED");
+        session.setStatus(LectureSessionStatus.INTERRUPTED.name());
         session.touch();
+        log.info("Lecture paused. sessionId={}, coursewareId={}", sessionId, session.getCoursewareId());
         return new SessionStatusView(sessionId, session.getStatus());
     }
 
@@ -51,9 +61,11 @@ public class LectureService {
         if (!StringUtils.hasText(sessionId)) {
             throw new IllegalArgumentException("sessionId 不能为空");
         }
+
         SessionState session = requireSession(sessionId);
-        session.setStatus("PLAYING");
+        session.setStatus(LectureSessionStatus.PLAYING.name());
         session.touch();
+        log.info("Lecture resumed. sessionId={}, coursewareId={}", sessionId, session.getCoursewareId());
         return new LectureSessionView(
                 session.getSessionId(),
                 session.getStatus(),
@@ -65,6 +77,7 @@ public class LectureService {
         if (!StringUtils.hasText(sessionId)) {
             throw new IllegalArgumentException("sessionId 不能为空");
         }
+
         SessionState session = requireSession(sessionId);
         return new SessionSnapshot(
                 session.getSessionId(),
@@ -81,16 +94,6 @@ public class LectureService {
             throw new NoSuchElementException("讲课会话不存在");
         }
         return session;
-    }
-
-    public record LectureSessionView(
-            String sessionId,
-            String status,
-            CoursewareService.CurrentNodeView currentNode
-    ) {
-    }
-
-    public record SessionStatusView(String sessionId, String status) {
     }
 
     public record SessionSnapshot(
@@ -110,7 +113,7 @@ public class LectureService {
         private final Instant createdAt = Instant.now();
         private volatile Instant updatedAt = createdAt;
         private volatile int currentPageIndex = 1;
-        private volatile String status = "PLAYING";
+        private volatile String status = LectureSessionStatus.IDLE.name();
 
         private SessionState(String sessionId, String coursewareId, String userId) {
             this.sessionId = sessionId;

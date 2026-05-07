@@ -3,6 +3,9 @@ package com.interactive.edu.controller;
 import com.interactive.edu.dto.BaseResponse;
 import com.interactive.edu.dto.CoursewareUploadResult;
 import com.interactive.edu.service.courseware.CoursewareService;
+import com.interactive.edu.vo.courseware.CoursewareDetailView;
+import com.interactive.edu.vo.courseware.CoursewareListView;
+import com.interactive.edu.vo.courseware.ScriptView;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
@@ -34,7 +37,7 @@ public class CoursewareController {
     }
 
     @GetMapping
-    public BaseResponse<CoursewareService.CoursewareListView> list(
+    public BaseResponse<CoursewareListView> list(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int pageSize,
             @RequestParam(required = false) String status
@@ -43,14 +46,14 @@ public class CoursewareController {
     }
 
     @GetMapping("/{coursewareId}")
-    public BaseResponse<CoursewareService.CoursewareDetailView> detail(
+    public BaseResponse<CoursewareDetailView> detail(
             @PathVariable("coursewareId") @NotBlank String coursewareId
     ) {
         return BaseResponse.ok(coursewareService.getDetail(coursewareId));
     }
 
     @GetMapping("/{coursewareId}/script")
-    public BaseResponse<CoursewareService.ScriptView> getScript(
+    public BaseResponse<ScriptView> getScript(
             @PathVariable("coursewareId") @NotBlank String coursewareId
     ) {
         return BaseResponse.ok(coursewareService.getScript(coursewareId));

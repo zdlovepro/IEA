@@ -1,5 +1,6 @@
 package com.interactive.edu.entity;
 
+import com.interactive.edu.enums.CoursewareStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -34,7 +35,7 @@ public class Courseware {
     private String fileType;
 
     @Column(name = "status", length = 64, nullable = false)
-    private String status = "UPLOADED";
+    private String status = CoursewareStatus.UPLOADED.name();
 
     @Column(name = "uploader_id", length = 64)
     private String uploaderId;

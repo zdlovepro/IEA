@@ -64,7 +64,9 @@ public class TtsService {
 
             String format = StringUtils.hasText(result.getFormat()) ? result.getFormat() : "wav";
             String objectKey = storageService.generateObjectKey(format);
-            return storageService.uploadAndSign(objectKey, result.getAudioData(), format, null);
+            String audioUrl = storageService.uploadAndSign(objectKey, result.getAudioData(), format, null);
+            log.info("TTS generation succeeded. format={}, audioBytes={}", format, result.getAudioData().length);
+            return audioUrl;
         } catch (Exception ex) {
             log.warn("TTS generation failed, degrade to text-only flow. reason={}", ex.getMessage());
             log.debug("TTS generation failure details", ex);

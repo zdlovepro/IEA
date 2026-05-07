@@ -1,5 +1,6 @@
 package com.interactive.edu.entity;
 
+import com.interactive.edu.enums.LectureSessionStatus;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -39,9 +40,8 @@ public class LectureSession {
     @Column(name = "resume_token", length = 255)
     private String resumeToken;
 
-    // ACTIVE, PAUSED, FINISHED
     @Column(name = "status", length = 32)
-    private String status = "ACTIVE";
+    private String status = LectureSessionStatus.IDLE.name();
 
     // POOR, NORMAL, GOOD
     @Column(name = "understanding_level", length = 32)

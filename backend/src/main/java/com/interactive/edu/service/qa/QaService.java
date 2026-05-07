@@ -2,7 +2,11 @@ package com.interactive.edu.service.qa;
 
 import com.interactive.edu.service.courseware.CoursewareService;
 import com.interactive.edu.service.lecture.LectureService;
+import com.interactive.edu.vo.courseware.ScriptSegmentView;
+import com.interactive.edu.vo.qa.EvidenceItemView;
+import com.interactive.edu.vo.qa.QaAnswerView;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -11,6 +15,7 @@ import java.util.List;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class QaService {
 
     private final LectureService lectureService;
@@ -23,26 +28,25 @@ public class QaService {
 
         long startAt = System.currentTimeMillis();
         LectureService.SessionSnapshot session = lectureService.getSessionSnapshot(sessionId);
-        List<CoursewareService.ScriptSegment> segments = coursewareService.getScriptSegments(session.coursewareId());
-        CoursewareService.ScriptSegment current = coursewareService.getSegmentForPage(
-                session.coursewareId(),
-                session.currentPageIndex()
-        );
-        CoursewareService.ScriptSegment target = selectTargetSegment(segments, current, question);
+        List<ScriptSegmentView> segments = coursewareService.getScriptSegments(session.coursewareId());
+        ScriptSegmentView current = coursewareService.getSegmentForPage(session.coursewareId(), session.currentPageIndex());
+        ScriptSegmentView target = selectTargetSegment(segments, current, question);
 
         String answer = buildAnswer(question, target);
-        List<EvidenceItem> evidence = buildEvidence(current, target);
+        List<EvidenceItemView> evidence = buildEvidence(current, target);
         long latencyMs = Math.max(1, System.currentTimeMillis() - startAt);
+        log.info("QA answered. sessionId={}, coursewareId={}, latencyMs={}",
+                sessionId, session.coursewareId(), latencyMs);
 
         return new QaAnswerView(answer, evidence, latencyMs);
     }
 
-    private CoursewareService.ScriptSegment selectTargetSegment(
-            List<CoursewareService.ScriptSegment> segments,
-            CoursewareService.ScriptSegment current,
+    private ScriptSegmentView selectTargetSegment(
+            List<ScriptSegmentView> segments,
+            ScriptSegmentView current,
             String question
     ) {
-        for (CoursewareService.ScriptSegment segment : segments) {
+        for (ScriptSegmentView segment : segments) {
             if (question.contains(segment.title())) {
                 return segment;
             }
@@ -57,7 +61,7 @@ public class QaService {
         return current;
     }
 
-    private String buildAnswer(String question, CoursewareService.ScriptSegment target) {
+    private String buildAnswer(String question, ScriptSegmentView target) {
         StringBuilder builder = new StringBuilder();
         builder.append("结合当前课件内容，");
 
@@ -80,15 +84,15 @@ public class QaService {
         return builder.toString();
     }
 
-    private List<EvidenceItem> buildEvidence(
-            CoursewareService.ScriptSegment current,
-            CoursewareService.ScriptSegment target
+    private List<EvidenceItemView> buildEvidence(
+            ScriptSegmentView current,
+            ScriptSegmentView target
     ) {
-        List<EvidenceItem> evidence = new ArrayList<>();
-        evidence.add(new EvidenceItem("page_" + target.pageIndex(), summarize(target.content())));
+        List<EvidenceItemView> evidence = new ArrayList<>();
+        evidence.add(new EvidenceItemView("page_" + target.pageIndex(), summarize(target.content())));
 
         if (!target.id().equals(current.id())) {
-            evidence.add(new EvidenceItem("page_" + current.pageIndex(), summarize(current.content())));
+            evidence.add(new EvidenceItemView("page_" + current.pageIndex(), summarize(current.content())));
         }
 
         return evidence;
@@ -99,11 +103,5 @@ public class QaService {
             return "";
         }
         return text.length() <= 120 ? text : text.substring(0, 120) + "...";
-    }
-
-    public record QaAnswerView(String answer, List<EvidenceItem> evidence, long latencyMs) {
-    }
-
-    public record EvidenceItem(String source, String text) {
     }
 }

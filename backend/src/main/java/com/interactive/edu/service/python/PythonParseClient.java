@@ -1,11 +1,14 @@
 package com.interactive.edu.service.python;
 
 import com.interactive.edu.config.PythonClientProperties;
+import com.interactive.edu.exception.ErrorCode;
+import com.interactive.edu.exception.ServiceException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 
 import java.net.http.HttpClient;
 import java.util.Collections;
@@ -35,24 +38,33 @@ public class PythonParseClient {
 
     public ParsePayload parse(PythonParseRequest req) {
         String url = props.getBaseUrl() + props.getParsePath();
-        ParseEnvelope envelope = restClient.post()
-                .uri(url)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .body(req)
-                .retrieve()
-                .body(ParseEnvelope.class);
+        try {
+            ParseEnvelope envelope = restClient.post()
+                    .uri(url)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
+                    .body(req)
+                    .retrieve()
+                    .body(ParseEnvelope.class);
 
-        if (envelope == null) {
-            throw new IllegalStateException("Python parse service returned empty response");
-        }
-        if (envelope.code() != 0 || envelope.data() == null) {
-            throw new IllegalStateException("Python parse service failed: " + envelope.message());
-        }
+            if (envelope == null) {
+                throw new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "课件解析服务返回空响应");
+            }
+            if (envelope.code() != 0 || envelope.data() == null) {
+                throw new ServiceException(
+                        ErrorCode.PYTHON_SERVICE_ERROR,
+                        "课件解析服务暂时不可用"
+                );
+            }
 
-        log.info("Python parse called ok, coursewareId={}, pages={}",
-                req.getCoursewareId(), envelope.data().pages());
-        return envelope.data();
+            log.info("Python parse succeeded. coursewareId={}, pages={}",
+                    req.getCoursewareId(), envelope.data().pages());
+            return envelope.data();
+        } catch (ServiceException ex) {
+            throw ex;
+        } catch (RestClientException ex) {
+            throw new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "课件解析服务调用失败", ex);
+        }
     }
 
     public record ParseEnvelope(int code, String message, ParsePayload data) {

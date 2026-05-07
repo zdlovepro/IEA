@@ -1,11 +1,22 @@
 package com.interactive.edu.service.courseware;
 
 import com.interactive.edu.dto.CoursewareUploadResult;
+import com.interactive.edu.enums.CoursewareStatus;
+import com.interactive.edu.enums.TaskStatus;
+import com.interactive.edu.exception.BusinessException;
+import com.interactive.edu.exception.ErrorCode;
 import com.interactive.edu.service.python.PythonParseClient;
 import com.interactive.edu.service.python.PythonParseRequest;
 import com.interactive.edu.service.storage.StoredObject;
 import com.interactive.edu.service.storage.StorageServiceFactory;
 import com.interactive.edu.service.tts.TtsService;
+import com.interactive.edu.vo.courseware.CoursewareDetailView;
+import com.interactive.edu.vo.courseware.CoursewareListItem;
+import com.interactive.edu.vo.courseware.CoursewareListView;
+import com.interactive.edu.vo.courseware.CurrentNodeView;
+import com.interactive.edu.vo.courseware.OutlineItemView;
+import com.interactive.edu.vo.courseware.ScriptSegmentView;
+import com.interactive.edu.vo.courseware.ScriptView;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +40,10 @@ import java.util.concurrent.ConcurrentMap;
 @Slf4j
 public class CoursewareService {
 
+    private static final String SCRIPT_STATUS_GENERATING = "GENERATING";
+    private static final String SCRIPT_STATUS_READY = "READY";
+    private static final String SCRIPT_STATUS_FAILED = "FAILED";
+
     private final StorageServiceFactory storageServiceFactory;
     private final PythonParseClient pythonParseClient;
     private final TaskExecutor taskExecutor;
@@ -47,8 +62,10 @@ public class CoursewareService {
         String coursewareId = "cware_" + UUID.randomUUID().toString().replace("-", "");
         String filename = normalizeFilename(file.getOriginalFilename());
         String displayName = resolveDisplayName(requestedName, filename);
-        StoredObject storedObject = storageServiceFactory.get().save(coursewareId, file);
+        log.info("Courseware upload accepted. coursewareId={}, filename={}, displayName={}",
+                coursewareId, filename, displayName);
 
+        StoredObject storedObject = storageServiceFactory.get().save(coursewareId, file);
         CoursewareState state = new CoursewareState(
                 coursewareId,
                 displayName,
@@ -57,13 +74,12 @@ public class CoursewareService {
                 storedObject.getStorageType(),
                 file.getContentType()
         );
-        state.setStatus("PARSING");
-        state.setCurrentTaskStatus("RUNNING");
+        state.setStatus(CoursewareStatus.PARSING.name());
+        state.setCurrentTaskStatus(TaskStatus.RUNNING.name());
         coursewareStore.put(coursewareId, state);
 
         taskExecutor.execute(() -> completeParse(state));
-
-        return new CoursewareUploadResult(coursewareId, "UPLOADED");
+        return new CoursewareUploadResult(coursewareId, CoursewareStatus.UPLOADED.name());
     }
 
     public CoursewareListView list(int page, int pageSize, String status) {
@@ -107,23 +123,30 @@ public class CoursewareService {
 
     public void triggerScriptGeneration(String coursewareId) {
         ensureCoursewareId(coursewareId);
-        requireCourseware(coursewareId);
+        CoursewareState state = requireCourseware(coursewareId);
 
         if (scriptStore.containsKey(coursewareId)) {
-            scriptStatusStore.put(coursewareId, "READY");
+            scriptStatusStore.put(coursewareId, SCRIPT_STATUS_READY);
+            state.setStatus(CoursewareStatus.READY.name());
+            state.setCurrentTaskStatus(TaskStatus.SUCCESS.name());
+            state.touch();
             return;
         }
 
         ParsedCourseware parsedCourseware = parsedStore.get(coursewareId);
         if (parsedCourseware == null) {
-            throw new IllegalStateException("课件尚未解析完成，暂时不能生成讲稿");
+            throw new BusinessException(ErrorCode.STATE_CONFLICT, "课件尚未解析完成，暂时不能生成讲稿");
         }
 
-        String previousStatus = scriptStatusStore.putIfAbsent(coursewareId, "GENERATING");
-        if ("GENERATING".equals(previousStatus)) {
+        String previousStatus = scriptStatusStore.putIfAbsent(coursewareId, SCRIPT_STATUS_GENERATING);
+        if (SCRIPT_STATUS_GENERATING.equals(previousStatus)) {
             return;
         }
 
+        state.setStatus(CoursewareStatus.GENERATING_SCRIPT.name());
+        state.setCurrentTaskStatus(TaskStatus.RUNNING.name());
+        state.touch();
+        log.info("Script generation started. coursewareId={}", coursewareId);
         taskExecutor.execute(() -> buildScript(coursewareId, parsedCourseware));
     }
 
@@ -141,17 +164,17 @@ public class CoursewareService {
     public ScriptView requireScript(String coursewareId) {
         ScriptView script = getScript(coursewareId);
         if (script == null) {
-            throw new IllegalStateException("讲稿尚未生成");
+            throw new BusinessException(ErrorCode.STATE_CONFLICT, "讲稿尚未生成");
         }
         return script;
     }
 
-    public List<ScriptSegment> getScriptSegments(String coursewareId) {
+    public List<ScriptSegmentView> getScriptSegments(String coursewareId) {
         return requireScript(coursewareId).segments();
     }
 
-    public ScriptSegment getSegmentForPage(String coursewareId, int pageIndex) {
-        List<ScriptSegment> segments = getScriptSegments(coursewareId);
+    public ScriptSegmentView getSegmentForPage(String coursewareId, int pageIndex) {
+        List<ScriptSegmentView> segments = getScriptSegments(coursewareId);
         return segments.stream()
                 .filter(segment -> segment.pageIndex() == pageIndex)
                 .findFirst()
@@ -159,12 +182,13 @@ public class CoursewareService {
     }
 
     public CurrentNodeView getCurrentNode(String coursewareId, int pageIndex) {
-        ScriptSegment segment = getSegmentForPage(coursewareId, pageIndex);
+        ScriptSegmentView segment = getSegmentForPage(coursewareId, pageIndex);
         return new CurrentNodeView(segment.nodeId(), segment.pageIndex(), segment.content(), segment.audioUrl());
     }
 
     private void completeParse(CoursewareState state) {
         try {
+            log.info("Courseware parsing started. coursewareId={}", state.getId());
             PythonParseClient.ParsePayload payload = null;
             try {
                 payload = pythonParseClient.parse(new PythonParseRequest(
@@ -175,19 +199,21 @@ public class CoursewareService {
                         state.getFileType()
                 ));
             } catch (Exception ex) {
-                log.warn("Python 解析不可用，回退为本地兜底解析，coursewareId={}, reason={}",
+                log.warn("Python parsing unavailable, fallback to local parsing. coursewareId={}, reason={}",
                         state.getId(), ex.getMessage());
             }
 
             ParsedCourseware parsedCourseware = toParsedCourseware(state, payload);
             parsedStore.put(state.getId(), parsedCourseware);
-            state.setStatus("PARSED");
-            state.setCurrentTaskStatus("SUCCESS");
+            state.setStatus(CoursewareStatus.PARSED.name());
+            state.setCurrentTaskStatus(TaskStatus.SUCCESS.name());
             state.touch();
+            log.info("Courseware parsing completed. coursewareId={}, segments={}",
+                    state.getId(), parsedCourseware.segments().size());
         } catch (Exception ex) {
-            log.error("课件解析失败，coursewareId={}", state.getId(), ex);
-            state.setStatus("FAILED");
-            state.setCurrentTaskStatus("FAILED");
+            log.error("Courseware parsing failed. coursewareId={}", state.getId(), ex);
+            state.setStatus(CoursewareStatus.FAILED.name());
+            state.setCurrentTaskStatus(TaskStatus.FAILED.name());
             state.touch();
         }
     }
@@ -200,7 +226,7 @@ public class CoursewareService {
                 int pageIndex = segment.pageIndex() > 0 ? segment.pageIndex() : index;
                 segments.add(new ParsedSegment(
                         pageIndex,
-                        defaultText(segment.title(), "第" + pageIndex + "页"),
+                        defaultText(segment.title(), "第 " + pageIndex + " 页"),
                         defaultText(segment.content(), "本页内容正在整理中。"),
                         segment.safeKnowledgePoints()
                 ));
@@ -217,18 +243,17 @@ public class CoursewareService {
 
     private void buildScript(String coursewareId, ParsedCourseware parsedCourseware) {
         try {
-            List<OutlineItem> outline = new ArrayList<>();
-            List<ScriptSegment> segments = new ArrayList<>();
+            List<OutlineItemView> outline = new ArrayList<>();
+            List<ScriptSegmentView> segments = new ArrayList<>();
 
             int totalPages = parsedCourseware.segments().size();
             for (int index = 0; index < totalPages; index++) {
                 ParsedSegment parsedSegment = parsedCourseware.segments().get(index);
                 String nodeId = "node_" + String.format("%03d", index + 1);
                 String content = buildScriptContent(parsedSegment, index + 1, totalPages);
-
                 String audioUrl = ttsService.synthesizeToAudioUrl(content);
 
-                ScriptSegment scriptSegment = new ScriptSegment(
+                segments.add(new ScriptSegmentView(
                         nodeId,
                         nodeId,
                         parsedSegment.pageIndex(),
@@ -236,20 +261,30 @@ public class CoursewareService {
                         content,
                         parsedSegment.knowledgePoints(),
                         audioUrl
-                );
-                segments.add(scriptSegment);
-                outline.add(new OutlineItem(nodeId, parsedSegment.title()));
+                ));
+                outline.add(new OutlineItemView(nodeId, parsedSegment.title()));
             }
 
-            scriptStore.put(coursewareId, new ScriptView(coursewareId, List.copyOf(outline), List.copyOf(segments), "READY"));
-            scriptStatusStore.put(coursewareId, "READY");
+            scriptStore.put(coursewareId, new ScriptView(
+                    coursewareId,
+                    List.copyOf(outline),
+                    List.copyOf(segments),
+                    SCRIPT_STATUS_READY
+            ));
+            scriptStatusStore.put(coursewareId, SCRIPT_STATUS_READY);
 
             CoursewareState state = requireCourseware(coursewareId);
-            state.setStatus("READY");
+            state.setStatus(CoursewareStatus.READY.name());
+            state.setCurrentTaskStatus(TaskStatus.SUCCESS.name());
             state.touch();
+            log.info("Script generation completed. coursewareId={}, segments={}", coursewareId, segments.size());
         } catch (Exception ex) {
-            log.error("讲稿生成失败，coursewareId={}", coursewareId, ex);
-            scriptStatusStore.put(coursewareId, "FAILED");
+            log.error("Script generation failed. coursewareId={}", coursewareId, ex);
+            scriptStatusStore.put(coursewareId, SCRIPT_STATUS_FAILED);
+            CoursewareState state = requireCourseware(coursewareId);
+            state.setStatus(CoursewareStatus.FAILED.name());
+            state.setCurrentTaskStatus(TaskStatus.FAILED.name());
+            state.touch();
         }
     }
 
@@ -259,7 +294,7 @@ public class CoursewareService {
                 new ParsedSegment(
                         1,
                         "课程导入",
-                        "这份课件《" + topic + "》将先帮助你建立主题背景，并说明本节课的学习目标。",
+                        "这份课件《" + topic + "》会先帮助学生建立主题背景，并说明本节课的学习目标。",
                         List.of(topic, "学习目标")
                 ),
                 new ParsedSegment(
@@ -349,54 +384,6 @@ public class CoursewareService {
         return StringUtils.hasText(text) ? text.trim() : fallback;
     }
 
-    public record CoursewareListView(List<CoursewareListItem> items, int total, int page, int pageSize) {
-    }
-
-    public record CoursewareListItem(
-            String id,
-            String name,
-            String status,
-            String createdAt,
-            String currentTaskStatus
-    ) {
-    }
-
-    public record CoursewareDetailView(
-            String coursewareId,
-            String name,
-            String status,
-            String currentTaskStatus,
-            String fileType,
-            String createdAt,
-            String updatedAt
-    ) {
-    }
-
-    public record ScriptView(
-            String coursewareId,
-            List<OutlineItem> outline,
-            List<ScriptSegment> segments,
-            String status
-    ) {
-    }
-
-    public record OutlineItem(String id, String title) {
-    }
-
-    public record ScriptSegment(
-            String id,
-            String nodeId,
-            int pageIndex,
-            String title,
-            String content,
-            List<String> knowledgePoints,
-            String audioUrl
-    ) {
-    }
-
-    public record CurrentNodeView(String nodeId, int pageIndex, String content, String audioUrl) {
-    }
-
     private record ParsedCourseware(String coursewareId, List<ParsedSegment> segments) {
     }
 
@@ -413,8 +400,8 @@ public class CoursewareService {
         private final String fileType;
         private final Instant createdAt = Instant.now();
         private volatile Instant updatedAt = createdAt;
-        private volatile String status = "UPLOADED";
-        private volatile String currentTaskStatus = "PENDING";
+        private volatile String status = CoursewareStatus.UPLOADED.name();
+        private volatile String currentTaskStatus = TaskStatus.PENDING.name();
 
         private CoursewareState(
                 String id,

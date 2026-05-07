@@ -1,5 +1,6 @@
 package com.interactive.edu.controller;
 
+import com.interactive.edu.dto.BaseResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -19,12 +20,12 @@ public class HealthController {
     private String profile;
 
     @GetMapping
-    public Map<String, Object> health() {
-        return Map.of(
+    public BaseResponse<Map<String, Object>> health() {
+        return BaseResponse.ok(Map.of(
                 "status", "UP",
                 "app", appName,
                 "profile", profile,
                 "timestamp", Instant.now().toString()
-        );
+        ));
     }
 }
