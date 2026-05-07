@@ -126,7 +126,11 @@ public class CoursewareService {
         CoursewareState state = requireCourseware(coursewareId);
 
         if (scriptStore.containsKey(coursewareId)) {
-            markScriptReady(state);
+            scriptStatusStore.put(coursewareId, CoursewareStatus.READY.name());
+            if (!CoursewareStatus.READY.name().equals(state.getStatus())) {
+                state.setStatus(CoursewareStatus.READY.name());
+                state.touch();
+            }
             return CoursewareStatus.READY.name();
         }
 
@@ -262,10 +266,27 @@ public class CoursewareService {
         CoursewareState state = requireCourseware(coursewareId);
         try {
             GeneratedScriptDraft draft = buildScriptDraft(coursewareId, coursewareName, parsedCourseware);
-            ScriptView scriptView = toScriptView(coursewareId, parsedCourseware, draft);
+            ScriptView baseScriptView = toScriptView(coursewareId, parsedCourseware, draft);
+            TtsBatchResult ttsBatchResult = synthesizeSegmentAudioUrls(coursewareId, baseScriptView.segments());
+            TaskStatus taskStatus = resolveScriptTaskStatus(ttsBatchResult);
+            ScriptView scriptView = new ScriptView(
+                    baseScriptView.coursewareId(),
+                    baseScriptView.outline(),
+                    ttsBatchResult.segments(),
+                    baseScriptView.status(),
+                    baseScriptView.opening(),
+                    baseScriptView.closing()
+            );
             scriptStore.put(coursewareId, scriptView);
-            markScriptReady(state);
-            log.info("Script generation completed. coursewareId={}, segments={}", coursewareId, scriptView.segments().size());
+            markScriptReady(state, taskStatus);
+            log.info(
+                    "Script generation completed. coursewareId={}, segments={}, ttsSuccessCount={}, ttsFailureCount={}, taskStatus={}",
+                    coursewareId,
+                    scriptView.segments().size(),
+                    ttsBatchResult.successCount(),
+                    ttsBatchResult.failureCount(),
+                    taskStatus.name()
+            );
         } catch (Exception ex) {
             log.error("Script generation failed. coursewareId={}", coursewareId, ex);
             scriptStore.remove(coursewareId);
@@ -380,7 +401,6 @@ public class CoursewareService {
                     index == 0 ? opening : null,
                     index == totalPages - 1 ? closing : null
             );
-            String audioUrl = synthesizeAudioUrlSafely(content, coursewareId, parsedSegment.pageIndex());
 
             outline.add(new OutlineItemView(nodeId, parsedSegment.title()));
             segments.add(new ScriptSegmentView(
@@ -390,7 +410,7 @@ public class CoursewareService {
                     parsedSegment.title(),
                     content,
                     parsedSegment.knowledgePoints(),
-                    audioUrl
+                    null
             ));
         }
 
@@ -421,14 +441,80 @@ public class CoursewareService {
         return String.join(" ", parts);
     }
 
-    private String synthesizeAudioUrlSafely(String content, String coursewareId, int pageIndex) {
+    private TtsBatchResult synthesizeSegmentAudioUrls(String coursewareId, List<ScriptSegmentView> segments) {
+        List<ScriptSegmentView> enrichedSegments = new ArrayList<>(segments.size());
+        int successCount = 0;
+        int failureCount = 0;
+
+        for (ScriptSegmentView segment : segments) {
+            String audioUrl = synthesizeAudioUrlSafely(
+                    segment.content(),
+                    coursewareId,
+                    segment.nodeId(),
+                    segment.pageIndex()
+            );
+
+            if (StringUtils.hasText(audioUrl)) {
+                successCount++;
+                log.info(
+                        "TTS segment generated. coursewareId={}, nodeId={}, pageIndex={}, textLength={}",
+                        coursewareId,
+                        segment.nodeId(),
+                        segment.pageIndex(),
+                        segment.content().length()
+                );
+            } else {
+                failureCount++;
+                log.info(
+                        "TTS segment unavailable. coursewareId={}, nodeId={}, pageIndex={}, textLength={}",
+                        coursewareId,
+                        segment.nodeId(),
+                        segment.pageIndex(),
+                        segment.content().length()
+                );
+            }
+
+            enrichedSegments.add(new ScriptSegmentView(
+                    segment.id(),
+                    segment.nodeId(),
+                    segment.pageIndex(),
+                    segment.title(),
+                    segment.content(),
+                    segment.knowledgePoints(),
+                    audioUrl
+            ));
+        }
+
+        log.info(
+                "TTS batch synthesis finished. coursewareId={}, totalSegments={}, successCount={}, failureCount={}",
+                coursewareId,
+                segments.size(),
+                successCount,
+                failureCount
+        );
+        return new TtsBatchResult(List.copyOf(enrichedSegments), successCount, failureCount);
+    }
+
+    private String synthesizeAudioUrlSafely(String content, String coursewareId, String nodeId, int pageIndex) {
         try {
             return ttsService.synthesizeToAudioUrl(content);
+        } catch (IllegalArgumentException ex) {
+            log.warn(
+                    "TTS segment rejected due to invalid content. coursewareId={}, nodeId={}, pageIndex={}, textLength={}, reason={}",
+                    coursewareId,
+                    nodeId,
+                    pageIndex,
+                    content == null ? 0 : content.length(),
+                    ex.getMessage()
+            );
+            throw ex;
         } catch (Exception ex) {
             log.warn(
-                    "TTS generation failed during script build. coursewareId={}, pageIndex={}, reason={}",
+                    "TTS generation failed during script build. coursewareId={}, nodeId={}, pageIndex={}, textLength={}, reason={}",
                     coursewareId,
+                    nodeId,
                     pageIndex,
+                    content == null ? 0 : content.length(),
                     ex.getMessage()
             );
             return null;
@@ -499,10 +585,16 @@ public class CoursewareService {
         return parsedCourseware.segments().get(nextIndex).title();
     }
 
-    private void markScriptReady(CoursewareState state) {
+    private TaskStatus resolveScriptTaskStatus(TtsBatchResult ttsBatchResult) {
+        return ttsBatchResult.failureCount() == 0
+                ? TaskStatus.SUCCESS
+                : TaskStatus.PARTIAL_SUCCESS;
+    }
+
+    private void markScriptReady(CoursewareState state, TaskStatus taskStatus) {
         scriptStatusStore.put(state.getId(), CoursewareStatus.READY.name());
         state.setStatus(CoursewareStatus.READY.name());
-        state.setCurrentTaskStatus(TaskStatus.SUCCESS.name());
+        state.setCurrentTaskStatus(taskStatus.name());
         state.touch();
     }
 
@@ -565,6 +657,9 @@ public class CoursewareService {
     }
 
     private record GeneratedPage(int pageIndex, String script, String transition) {
+    }
+
+    private record TtsBatchResult(List<ScriptSegmentView> segments, int successCount, int failureCount) {
     }
 
     @Getter

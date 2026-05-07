@@ -69,16 +69,16 @@ class CoursewareServiceTest {
                 new StoredObject(invocation.getArgument(0) + "/demo.pdf", "local"));
         when(pythonParseClient.parse(any(PythonParseRequest.class))).thenReturn(new PythonParseClient.ParsePayload(
                 2,
-                List.of("第一页标题", "第二页标题"),
+                List.of("Page 1 Title", "Page 2 Title"),
                 List.of(
-                        new PythonParseClient.ParseSegment(1, "第一页标题", "第一页正文", List.of("概念1")),
-                        new PythonParseClient.ParseSegment(2, "第二页标题", "第二页正文", List.of("概念2"))
+                        new PythonParseClient.ParseSegment(1, "Page 1 Title", "Page 1 body", List.of("Concept 1")),
+                        new PythonParseClient.ParseSegment(2, "Page 2 Title", "Page 2 body", List.of("Concept 2"))
                 )
         ));
     }
 
     @Test
-    @DisplayName("脚本生成任务已在执行中时不重复提交，接口可立即返回 GENERATING_SCRIPT")
+    @DisplayName("returns GENERATING_SCRIPT immediately and avoids duplicate submissions")
     void triggerScriptGeneration_whenAlreadyGenerating_doesNotSubmitDuplicateTask() {
         String coursewareId = uploadAndFinishParse();
 
@@ -99,17 +99,19 @@ class CoursewareServiceTest {
     }
 
     @Test
-    @DisplayName("Python 可用时优先使用 Python 生成的 opening/pages/closing，并最终进入 READY")
+    @DisplayName("prefers Python generated opening pages and closing when available")
     void triggerScriptGeneration_pythonAvailable_usesPythonResultAndReady() {
+        when(ttsService.synthesizeToAudioUrl(anyString()))
+                .thenReturn("http://audio.test/segment-1.mp3", "http://audio.test/segment-2.mp3");
         when(pythonScriptClient.generate(any(PythonScriptRequest.class))).thenReturn(
                 new PythonScriptClient.ScriptPayload(
                         "ignored-courseware-id",
-                        "统一开场白",
+                        "Opening from Python",
                         List.of(
-                                new PythonScriptClient.PageScriptPayload(1, "第一页讲稿", "继续到第二页"),
-                                new PythonScriptClient.PageScriptPayload(2, "第二页讲稿", "本页结束，准备总结")
+                                new PythonScriptClient.PageScriptPayload(1, "Page 1 script", "Transition to page 2"),
+                                new PythonScriptClient.PageScriptPayload(2, "Page 2 script", "Transition to closing")
                         ),
-                        "统一结语"
+                        "Closing from Python"
                 )
         );
 
@@ -125,16 +127,17 @@ class CoursewareServiceTest {
         assertThat(detail.currentTaskStatus()).isEqualTo(TaskStatus.SUCCESS.name());
         assertThat(script).isNotNull();
         assertThat(script.status()).isEqualTo(CoursewareStatus.READY.name());
-        assertThat(script.opening()).isEqualTo("统一开场白");
-        assertThat(script.closing()).isEqualTo("统一结语");
+        assertThat(script.opening()).isEqualTo("Opening from Python");
+        assertThat(script.closing()).isEqualTo("Closing from Python");
         assertThat(script.segments()).hasSize(2);
-        assertThat(script.segments().get(0).content()).contains("统一开场白", "第一页讲稿", "继续到第二页");
-        assertThat(script.segments().get(1).content()).contains("第二页讲稿", "本页结束，准备总结", "统一结语");
+        assertThat(script.segments()).allMatch(segment -> segment.audioUrl() != null);
+        assertThat(script.segments().get(0).content()).contains("Opening from Python", "Page 1 script", "Transition to page 2");
+        assertThat(script.segments().get(1).content()).contains("Page 2 script", "Transition to closing", "Closing from Python");
 
         ArgumentCaptor<PythonScriptRequest> captor = ArgumentCaptor.forClass(PythonScriptRequest.class);
         verify(pythonScriptClient).generate(captor.capture());
         assertThat(captor.getValue().getCoursewareId()).isEqualTo(coursewareId);
-        assertThat(captor.getValue().getCoursewareName()).isEqualTo("示例课件");
+        assertThat(captor.getValue().getCoursewareName()).isEqualTo("Sample Courseware");
         assertThat(captor.getValue().getPages()).hasSize(2);
 
         assertThat(service.triggerScriptGeneration(coursewareId)).isEqualTo(CoursewareStatus.READY.name());
@@ -142,8 +145,10 @@ class CoursewareServiceTest {
     }
 
     @Test
-    @DisplayName("Python 不可用时仍使用本地 fallback 生成讲稿，并最终进入 READY")
+    @DisplayName("falls back to local script draft when Python is unavailable")
     void triggerScriptGeneration_pythonUnavailable_fallsBackToLocalDraft() {
+        when(ttsService.synthesizeToAudioUrl(anyString()))
+                .thenReturn("http://audio.test/segment-1.mp3", "http://audio.test/segment-2.mp3");
         when(pythonScriptClient.generate(any(PythonScriptRequest.class)))
                 .thenThrow(new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "python down"));
 
@@ -158,10 +163,78 @@ class CoursewareServiceTest {
         assertThat(detail.status()).isEqualTo(CoursewareStatus.READY.name());
         assertThat(detail.currentTaskStatus()).isEqualTo(TaskStatus.SUCCESS.name());
         assertThat(script).isNotNull();
-        assertThat(script.opening()).contains("示例课件");
-        assertThat(script.segments().get(0).content()).contains("第一页正文");
-        assertThat(script.segments().get(0).content()).contains("理解了这一页之后");
-        assertThat(script.closing()).contains("主要内容");
+        assertThat(script.segments()).allMatch(segment -> segment.audioUrl() != null);
+        assertThat(script.opening()).contains("Sample Courseware");
+        assertThat(script.segments().get(0).content()).contains("Page 1 body");
+        assertThat(script.segments().get(0).content()).contains("Concept 1");
+        assertThat(script.closing()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("marks task as PARTIAL_SUCCESS when only some pages have audio")
+    void triggerScriptGeneration_partialTtsFailure_marksReadyWithPartialSuccess() {
+        when(ttsService.synthesizeToAudioUrl(anyString()))
+                .thenReturn("http://audio.test/segment-1.mp3", (String) null);
+        when(pythonScriptClient.generate(any(PythonScriptRequest.class)))
+                .thenThrow(new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "python down"));
+
+        String coursewareId = uploadAndFinishParse();
+
+        assertThat(service.triggerScriptGeneration(coursewareId)).isEqualTo(CoursewareStatus.GENERATING_SCRIPT.name());
+        taskExecutor.runNext();
+
+        ScriptView script = service.getScript(coursewareId);
+        CoursewareDetailView detail = service.getDetail(coursewareId);
+
+        assertThat(detail.status()).isEqualTo(CoursewareStatus.READY.name());
+        assertThat(detail.currentTaskStatus()).isEqualTo(TaskStatus.PARTIAL_SUCCESS.name());
+        assertThat(script).isNotNull();
+        assertThat(script.segments()).hasSize(2);
+        assertThat(script.segments().get(0).audioUrl()).isEqualTo("http://audio.test/segment-1.mp3");
+        assertThat(script.segments().get(1).audioUrl()).isNull();
+    }
+
+    @Test
+    @DisplayName("keeps courseware READY when all TTS calls fail unexpectedly")
+    void triggerScriptGeneration_allTtsFailure_stillReadyWithPartialSuccess() {
+        when(ttsService.synthesizeToAudioUrl(anyString()))
+                .thenThrow(new IllegalStateException("tts down"));
+        when(pythonScriptClient.generate(any(PythonScriptRequest.class)))
+                .thenThrow(new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "python down"));
+
+        String coursewareId = uploadAndFinishParse();
+
+        assertThat(service.triggerScriptGeneration(coursewareId)).isEqualTo(CoursewareStatus.GENERATING_SCRIPT.name());
+        taskExecutor.runNext();
+
+        ScriptView script = service.getScript(coursewareId);
+        CoursewareDetailView detail = service.getDetail(coursewareId);
+
+        assertThat(detail.status()).isEqualTo(CoursewareStatus.READY.name());
+        assertThat(detail.currentTaskStatus()).isEqualTo(TaskStatus.PARTIAL_SUCCESS.name());
+        assertThat(script).isNotNull();
+        assertThat(script.segments()).allMatch(segment -> segment.audioUrl() == null);
+    }
+
+    @Test
+    @DisplayName("keeps courseware READY when TTS degrades to null for every page")
+    void triggerScriptGeneration_ttsReturnsNullForAllSegments_keepsReadyAndNullAudio() {
+        when(ttsService.synthesizeToAudioUrl(anyString())).thenReturn((String) null);
+        when(pythonScriptClient.generate(any(PythonScriptRequest.class)))
+                .thenThrow(new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "python down"));
+
+        String coursewareId = uploadAndFinishParse();
+
+        assertThat(service.triggerScriptGeneration(coursewareId)).isEqualTo(CoursewareStatus.GENERATING_SCRIPT.name());
+        taskExecutor.runNext();
+
+        ScriptView script = service.getScript(coursewareId);
+        CoursewareDetailView detail = service.getDetail(coursewareId);
+
+        assertThat(detail.status()).isEqualTo(CoursewareStatus.READY.name());
+        assertThat(detail.currentTaskStatus()).isEqualTo(TaskStatus.PARTIAL_SUCCESS.name());
+        assertThat(script).isNotNull();
+        assertThat(script.segments()).allMatch(segment -> segment.audioUrl() == null);
     }
 
     private String uploadAndFinishParse() {
@@ -172,7 +245,7 @@ class CoursewareServiceTest {
                 "demo".getBytes(StandardCharsets.UTF_8)
         );
 
-        CoursewareUploadResult uploadResult = service.upload(file, "示例课件");
+        CoursewareUploadResult uploadResult = service.upload(file, "Sample Courseware");
         assertThat(taskExecutor.size()).isEqualTo(1);
         taskExecutor.runNext();
 
