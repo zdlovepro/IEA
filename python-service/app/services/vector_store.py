@@ -28,7 +28,14 @@ class VectorStoreManager:
         if not documents:
             return 0
 
-        normalized_documents = [self._normalize_document(document) for document in documents]
+        normalized_documents = [
+            normalized_document
+            for normalized_document in (self._normalize_document(document) for document in documents)
+            if normalized_document["content"]
+        ]
+        if not normalized_documents:
+            return 0
+
         fallback_count = self.fallback_repository.insert_documents(courseware_id, normalized_documents, vectors=None)
 
         if isinstance(self.repository, KeywordVectorRepository):
@@ -91,10 +98,23 @@ class VectorStoreManager:
 
     def _normalize_document(self, document: Dict[str, Any]) -> Dict[str, Any]:
         content = (document.get("content") or document.get("text") or "").strip()
+        metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+        chunk_id = document.get("chunk_id") or document.get("chunkId") or ""
+        page_index = document.get("page_index") or document.get("pageIndex") or metadata.get("page_index") or 0
         return {
-            "node_id": document.get("node_id") or document.get("nodeId") or "",
+            "node_id": document.get("node_id") or document.get("nodeId") or chunk_id or "",
+            "chunk_id": chunk_id,
+            "page_index": self._safe_page_index(page_index),
             "content": content,
+            "metadata": metadata,
         }
+
+    @staticmethod
+    def _safe_page_index(page_index: Any) -> int:
+        try:
+            return int(page_index)
+        except (TypeError, ValueError):
+            return 0
 
 
 vector_store: VectorStoreManager | None = None

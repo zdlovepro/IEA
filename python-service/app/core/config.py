@@ -19,7 +19,11 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "lecture_knowledge"
 
     # ---------- Embedding Model Config ----------
-    EMBEDDING_MODEL_NAME: str = "BAAI/bge-large-zh-v1.5"
+    EMBEDDING_PROVIDER: str = "dashscope"
+    EMBEDDING_API_KEY: str | None = None
+    DASHSCOPE_API_KEY: str | None = None
+    EMBEDDING_API_BASE: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    EMBEDDING_MODEL_NAME: str = "text-embedding-v4"
     EMBEDDING_DIM_SIZE: int = 1024
 
     # ---------- LLM Config ----------
