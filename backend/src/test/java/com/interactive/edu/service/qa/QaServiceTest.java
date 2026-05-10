@@ -7,6 +7,7 @@ import com.interactive.edu.service.lecture.LectureService;
 import com.interactive.edu.service.python.PythonQaClient;
 import com.interactive.edu.service.python.PythonQaRequest;
 import com.interactive.edu.service.python.PythonQaResponse;
+import com.interactive.edu.service.record.LectureRecordService;
 import com.interactive.edu.vo.courseware.ScriptSegmentView;
 import com.interactive.edu.vo.qa.QaAnswerView;
 import org.junit.jupiter.api.DisplayName;
@@ -43,6 +44,9 @@ class QaServiceTest {
 
     @Mock
     private PythonQaClient pythonQaClient;
+
+    @Mock
+    private LectureRecordService lectureRecordService;
 
     @InjectMocks
     private QaService qaService;
@@ -82,6 +86,15 @@ class QaServiceTest {
         assertThat(captor.getValue().getPageIndex()).isEqualTo(3);
         assertThat(captor.getValue().getQuestion()).isEqualTo("这一页在讲什么");
         assertThat(captor.getValue().getTopK()).isEqualTo(5);
+        verify(lectureRecordService).createQaRecord(
+                "sess_qa_1",
+                "cware_qa_1",
+                3,
+                "这一页在讲什么",
+                "这是 Python RAG 的回答。",
+                result.evidence(),
+                123
+        );
         verifyNoInteractions(coursewareService);
     }
 
@@ -127,6 +140,15 @@ class QaServiceTest {
         assertThat(result.evidence()).hasSize(2);
         assertThat(result.evidence().get(0).pageIndex()).isEqualTo(1);
         assertThat(result.evidence().get(1).pageIndex()).isEqualTo(2);
+        verify(lectureRecordService).createQaRecord(
+                "sess_qa_2",
+                "cware_qa_2",
+                2,
+                "什么是终止条件",
+                result.answer(),
+                result.evidence(),
+                result.latencyMs()
+        );
     }
 
     @Test
@@ -160,6 +182,15 @@ class QaServiceTest {
         assertThat(result.answer()).contains("链表结构", "链表由节点和指针组成");
         assertThat(result.evidence()).hasSize(1);
         assertThat(result.evidence().get(0).chunkId()).isEqualTo("node_3");
+        verify(lectureRecordService).createQaRecord(
+                "sess_qa_3",
+                "cware_qa_3",
+                1,
+                "链表是什么",
+                result.answer(),
+                result.evidence(),
+                result.latencyMs()
+        );
     }
 
     @Test
@@ -197,6 +228,7 @@ class QaServiceTest {
         assertThat(captor.getValue().getPageIndex()).isEqualTo(4);
         assertThat(captor.getValue().getQuestion()).isEqualTo("请开始流式回答");
         assertThat(captor.getValue().getTopK()).isEqualTo(4);
+        verifyNoInteractions(coursewareService, lectureRecordService);
     }
 
     @Test
@@ -220,6 +252,7 @@ class QaServiceTest {
         String payload = output.toString(StandardCharsets.UTF_8);
         assertThat(payload).contains("当前问答服务暂时不可用，请稍后重试。");
         assertThat(payload).contains("data: {\"type\":\"done\"}");
+        verifyNoInteractions(coursewareService, lectureRecordService);
     }
 
     @Test
@@ -229,7 +262,7 @@ class QaServiceTest {
 
         assertThatThrownBy(() -> qaService.askText("missing", "问题"))
                 .isInstanceOf(NoSuchElementException.class);
-        verifyNoInteractions(pythonQaClient, coursewareService);
+        verifyNoInteractions(pythonQaClient, coursewareService, lectureRecordService);
     }
 
     @Test
@@ -239,6 +272,6 @@ class QaServiceTest {
 
         assertThatThrownBy(() -> qaService.streamText("missing", "问题", 5))
                 .isInstanceOf(NoSuchElementException.class);
-        verifyNoInteractions(pythonQaClient, coursewareService);
+        verifyNoInteractions(pythonQaClient, coursewareService, lectureRecordService);
     }
 }

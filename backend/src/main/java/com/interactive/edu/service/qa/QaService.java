@@ -5,6 +5,7 @@ import com.interactive.edu.service.lecture.LectureService;
 import com.interactive.edu.service.python.PythonQaClient;
 import com.interactive.edu.service.python.PythonQaRequest;
 import com.interactive.edu.service.python.PythonQaResponse;
+import com.interactive.edu.service.record.LectureRecordService;
 import com.interactive.edu.vo.courseware.ScriptSegmentView;
 import com.interactive.edu.vo.qa.EvidenceItemView;
 import com.interactive.edu.vo.qa.QaAnswerView;
@@ -34,6 +35,7 @@ public class QaService {
     private final LectureService lectureService;
     private final CoursewareService coursewareService;
     private final PythonQaClient pythonQaClient;
+    private final LectureRecordService lectureRecordService;
 
     public QaAnswerView askText(String sessionId, String question) {
         String resolvedQuestion = validateQuestion(question);
@@ -43,6 +45,14 @@ public class QaService {
         PythonQaResponse pythonQaResponse = askPythonFirst(session, resolvedQuestion);
         if (pythonQaResponse != null) {
             long latencyMs = resolveLatencyMs(startAt, pythonQaResponse.latencyMs());
+            QaAnswerView answerView = new QaAnswerView(
+                    pythonQaResponse.answer(),
+                    pythonQaResponse.safeEvidence().stream()
+                            .map(this::toEvidenceItemView)
+                            .toList(),
+                    latencyMs
+            );
+            recordQaSafely(session, resolvedQuestion, answerView);
             log.info(
                     "QA answered by Python RAG. sessionId={}, coursewareId={}, pageIndex={}, latencyMs={}",
                     sessionId,
@@ -50,13 +60,7 @@ public class QaService {
                     session.currentPageIndex(),
                     latencyMs
             );
-            return new QaAnswerView(
-                    pythonQaResponse.answer(),
-                    pythonQaResponse.safeEvidence().stream()
-                            .map(this::toEvidenceItemView)
-                            .toList(),
-                    latencyMs
-            );
+            return answerView;
         }
 
         List<ScriptSegmentView> segments = coursewareService.getScriptSegments(session.coursewareId());
@@ -66,6 +70,8 @@ public class QaService {
         String answer = buildAnswer(resolvedQuestion, target);
         List<EvidenceItemView> evidence = buildEvidence(current, target);
         long latencyMs = Math.max(1, System.currentTimeMillis() - startAt);
+        QaAnswerView answerView = new QaAnswerView(answer, evidence, latencyMs);
+        recordQaSafely(session, resolvedQuestion, answerView);
         log.info(
                 "QA answered by local fallback. sessionId={}, coursewareId={}, pageIndex={}, latencyMs={}",
                 sessionId,
@@ -74,7 +80,7 @@ public class QaService {
                 latencyMs
         );
 
-        return new QaAnswerView(answer, evidence, latencyMs);
+        return answerView;
     }
 
     public StreamingResponseBody streamText(String sessionId, String question, Integer topK) {
@@ -137,6 +143,32 @@ public class QaService {
             );
             outputStream.write(STREAM_FALLBACK_BYTES);
             outputStream.flush();
+        }
+    }
+
+    private void recordQaSafely(
+            LectureService.SessionSnapshot session,
+            String question,
+            QaAnswerView answerView
+    ) {
+        try {
+            lectureRecordService.createQaRecord(
+                    session.sessionId(),
+                    session.coursewareId(),
+                    session.currentPageIndex(),
+                    question,
+                    answerView.answer(),
+                    answerView.evidence(),
+                    answerView.latencyMs()
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "Failed to persist QA record. sessionId={}, coursewareId={}, pageIndex={}, reason={}",
+                    session.sessionId(),
+                    session.coursewareId(),
+                    session.currentPageIndex(),
+                    ex.getMessage()
+            );
         }
     }
 

@@ -6,6 +6,8 @@ import com.interactive.edu.dto.ws.LectureSignalMessage;
 import com.interactive.edu.dto.ws.LectureSignalResponse;
 import com.interactive.edu.enums.LectureSessionStatus;
 import com.interactive.edu.service.lecture.LectureService;
+import com.interactive.edu.service.record.LectureRecordService;
+import com.interactive.edu.vo.record.InterruptRecordView;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -29,6 +31,7 @@ public class LectureWebSocketHandler extends TextWebSocketHandler {
     private static final String SESSION_ID_ATTRIBUTE = "lectureSessionId";
 
     private final LectureService lectureService;
+    private final LectureRecordService lectureRecordService;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -106,15 +109,31 @@ public class LectureWebSocketHandler extends TextWebSocketHandler {
                 signalMessage.getPageIndex(),
                 signalMessage.getCurrentTime()
         );
+        InterruptRecordView interruptRecord = lectureRecordService.createInterruptRecord(
+                state.sessionId(),
+                state.coursewareId(),
+                state.currentPageIndex(),
+                state.breakpointTime()
+        );
+        String asrText = extractAsrText(signalMessage);
+        if (StringUtils.hasText(asrText)) {
+            interruptRecord = lectureRecordService.updateLatestInterruptAsrText(state.sessionId(), asrText);
+        }
+
         Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("interruptId", interruptRecord.interruptId());
         payload.put("status", state.status());
         payload.put("pageIndex", state.currentPageIndex());
         payload.put("currentTime", state.breakpointTime());
+        if (StringUtils.hasText(interruptRecord.asrText())) {
+            payload.put("asrText", interruptRecord.asrText());
+        }
         sendSafely(session, LectureSignalResponse.ack(sessionId, payload));
     }
 
     private void handleResume(WebSocketSession session, String sessionId) {
         LectureService.ResumeState resumeState = lectureService.resumeFromBreakpoint(sessionId);
+        lectureRecordService.tryMarkLatestInterruptResumed(sessionId);
 
         Map<String, Object> ackPayload = new LinkedHashMap<>();
         ackPayload.put("status", LectureSessionStatus.RESUMING.name());
@@ -176,6 +195,18 @@ public class LectureWebSocketHandler extends TextWebSocketHandler {
             throw new IllegalArgumentException("type is required");
         }
         return type.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String extractAsrText(LectureSignalMessage signalMessage) {
+        if (signalMessage.getPayload() == null || signalMessage.getPayload().isEmpty()) {
+            return null;
+        }
+        Object raw = signalMessage.getPayload().get("asrText");
+        if (raw == null) {
+            raw = signalMessage.getPayload().get("asr_text");
+        }
+        String text = raw == null ? null : raw.toString();
+        return StringUtils.hasText(text) ? text.trim() : null;
     }
 
     private void sendSafely(WebSocketSession session, LectureSignalResponse response) {
