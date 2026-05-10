@@ -17,6 +17,9 @@ public class PythonClientProperties {
     /** Script generation API path, e.g. /python/v1/script/generate */
     private String scriptGeneratePath = "/python/v1/script/generate";
 
+    /** QA API path, e.g. /python/v1/qa/ask-text */
+    private String qaPath = "/python/v1/qa/ask-text";
+
     /** HTTP connect timeout. */
     private Duration connectTimeout = Duration.ofSeconds(5);
 

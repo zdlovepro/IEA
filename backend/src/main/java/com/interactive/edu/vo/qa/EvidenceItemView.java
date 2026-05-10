@@ -1,4 +1,9 @@
 package com.interactive.edu.vo.qa;
 
-public record EvidenceItemView(String source, String text) {
+public record EvidenceItemView(
+        String source,
+        String text,
+        Integer pageIndex,
+        String chunkId
+) {
 }
