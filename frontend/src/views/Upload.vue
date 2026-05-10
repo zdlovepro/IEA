@@ -1,56 +1,119 @@
 <template>
   <div class="upload-page">
-    <div class="upload-container">
-      <h1>上传课件</h1>
-      <p class="subtitle">支持 PPT 和 PDF，系统将自动解析并生成讲稿</p>
-
-      <FileUpload
-        :disabled="uploadStatus?.status === 'uploading'"
-        @file-selected="handleFileSelected"
-        @error="handleError"
-      />
-
-      <div v-if="uploadStatus" class="upload-status">
-        <div class="status-indicator" :class="uploadStatus.status"></div>
-        <p>{{ uploadStatus.message }}</p>
-        <div v-if="uploadStatus.progress !== undefined" class="progress-bar">
-          <div class="progress-fill" :style="{ width: uploadStatus.progress + '%' }"></div>
-        </div>
+    <section class="page-shell page-section upload-hero">
+      <div>
+        <span class="eyebrow">课件上传</span>
+        <h1 class="page-title">上传课件</h1>
+        <p class="page-description">
+          选择课件后，系统会自动完成解析、讲稿生成与课堂资源准备。你可以随时回到课程列表继续查看进度。
+        </p>
       </div>
+    </section>
 
-      <div v-if="uploadError" class="error-message">
-        鈿狅笍 {{ uploadError }}
-      </div>
+    <section class="page-shell upload-layout">
+      <AppCard class="upload-main-card" tone="accent">
+        <FileUpload
+          :disabled="uploadStatus?.status === 'uploading'"
+          @file-selected="handleFileSelected"
+          @error="handleError"
+        />
 
-      <div v-if="uploadedCourseware.length > 0" class="courseware-list">
-        <h2>已上传课件</h2>
-        <div class="list-items">
-          <div
-            v-for="item in uploadedCourseware"
-            :key="item.id"
-            class="list-item"
-            @click="openCourseware(item)"
-          >
-            <div class="item-icon">馃搫</div>
-            <div class="item-info">
-              <p class="item-title">{{ item.name }}</p>
-              <p class="item-meta">{{ formatDate(item.createdAt) }}</p>
+        <div class="upload-status-panel">
+          <div class="status-summary">
+            <div>
+              <p class="status-label">当前状态</p>
+              <h3>{{ currentStatusTitle }}</h3>
+              <p class="status-text">{{ currentStatusMessage }}</p>
             </div>
-            <div class="item-status" :class="statusClass(item.status)">{{ statusLabel(item.status) }}</div>
+            <StatusBadge :label="currentStatusBadge.text" :tone="currentStatusBadge.tone" />
+          </div>
+
+          <div class="progress-track" v-if="showProgress">
+            <div class="progress-fill" :style="{ width: `${uploadStatus.progress || 0}%` }"></div>
+          </div>
+
+          <div v-if="latestCourseware" class="next-actions">
+            <AppButton variant="secondary" size="sm" @click="openCourseware(latestCourseware)">
+              查看讲稿
+            </AppButton>
+            <AppButton
+              size="sm"
+              :disabled="latestCourseware.status !== 'READY'"
+              @click="enterLecture(latestCourseware)"
+            >
+              进入课堂
+            </AppButton>
           </div>
         </div>
+      </AppCard>
+
+      <div class="upload-side-column">
+        <AppCard tone="glass" class="side-card">
+          <h3>上传流程</h3>
+          <ol class="flow-list">
+            <li>上传课件文件</li>
+            <li>解析页面与文本结构</li>
+            <li>生成讲稿与语音资源</li>
+            <li>进入互动课堂继续教学</li>
+          </ol>
+        </AppCard>
+
+        <AppCard tone="subtle" class="side-card">
+          <h3>准备建议</h3>
+          <ul class="tip-list">
+            <li>优先上传排版完整的 PDF 或 PPTX。</li>
+            <li>章节标题明确时，讲稿结构会更稳定。</li>
+            <li>上传后可以先检查讲稿，再进入课堂。</li>
+          </ul>
+        </AppCard>
       </div>
-    </div>
+    </section>
+
+    <section class="page-shell page-section">
+      <div class="section-header">
+        <div>
+          <span class="eyebrow">最近课件</span>
+          <h2 class="page-title section-title">继续处理最近上传的课程</h2>
+        </div>
+      </div>
+
+      <div v-if="uploadError" class="inline-error">
+        <span>{{ uploadError }}</span>
+        <button @click="uploadError = null">关闭</button>
+      </div>
+
+      <div v-if="uploadedCourseware.length" class="grid-auto">
+        <CoursewareCard
+          v-for="item in uploadedCourseware"
+          :key="item.id"
+          :courseware="item"
+          @view-script="openCourseware"
+          @enter-lecture="enterLecture"
+        />
+      </div>
+      <AppCard v-else tone="glass">
+        <EmptyState
+          title="还没有上传记录"
+          description="上传一个课件后，这里会显示最近的课程资源与解析进度。"
+        />
+      </AppCard>
+    </section>
   </div>
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import FileUpload from '@/components/Upload/FileUpload.vue'
+import CoursewareCard from '@/components/course/CoursewareCard.vue'
+import AppButton from '@/components/ui/AppButton.vue'
+import AppCard from '@/components/ui/AppCard.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { getCoursewareDetail, listCourseware, uploadCourseware } from '@/api/courseware'
+import { getCoursewareStatusMeta } from '@/constants/courseware'
 import { useCourseStore } from '@/stores/course'
-import { formatDate, getErrorMessage } from '@/utils'
+import { getErrorMessage } from '@/utils'
 
 const router = useRouter()
 const courseStore = useCourseStore()
@@ -58,43 +121,82 @@ const courseStore = useCourseStore()
 const uploadStatus = ref(null)
 const uploadError = ref(null)
 const uploadedCourseware = ref([])
+const latestCoursewareId = ref('')
 
 let pollTimer = null
 
-const statusClass = status => {
-  switch (status) {
-    case 'PARSING':
-      return 'parsing'
-    case 'PARSED':
-    case 'READY':
-      return 'success'
-    case 'FAILED':
-      return 'error'
-    default:
-      return ''
-  }
-}
+const latestCourseware = computed(() =>
+  uploadedCourseware.value.find(item => item.id === latestCoursewareId.value) || uploadedCourseware.value[0] || null,
+)
 
-const statusLabel = status => {
-  switch (status) {
-    case 'PARSING':
-      return '解析中'
-    case 'PARSED':
-      return '已解析'
-    case 'READY':
-      return '可讲课'
-    case 'FAILED':
-      return '失败'
-    default:
-      return status || '未知状态'
+const currentStatusTitle = computed(() => {
+  if (!uploadStatus.value) {
+    return '未选择文件'
   }
-}
+
+  if (uploadStatus.value.status === 'uploading') {
+    return '上传中'
+  }
+
+  if (uploadStatus.value.status === 'success') {
+    return '处理进行中'
+  }
+
+  return '上传失败'
+})
+
+const currentStatusMessage = computed(() => {
+  return uploadStatus.value?.message || '选择一个课件后，系统会在这里展示上传与解析进度。'
+})
+
+const currentStatusBadge = computed(() => {
+  if (!uploadStatus.value) {
+    return { text: '未开始', tone: 'neutral' }
+  }
+
+  if (uploadStatus.value.status === 'uploading') {
+    return { text: '上传中', tone: 'accent' }
+  }
+
+  if (uploadStatus.value.status === 'success') {
+    return { text: '处理中', tone: 'success' }
+  }
+
+  return { text: '失败', tone: 'danger' }
+})
+
+const showProgress = computed(() => uploadStatus.value && uploadStatus.value.progress !== undefined)
 
 const showError = (error, fallback) => {
   uploadError.value = getErrorMessage(error, fallback)
 }
 
-const pollParseStatus = (coursewareId, coursewareItem) => {
+const normalizeCoursewareItem = item => ({
+  id: item?.id || item?.coursewareId || '',
+  name: item?.name || '未命名课程',
+  status: item?.status || 'UPLOADED',
+  createdAt: item?.createdAt || item?.updatedAt || new Date().toISOString(),
+  updatedAt: item?.updatedAt || item?.createdAt || '',
+  currentTaskStatus: item?.currentTaskStatus || '',
+})
+
+const upsertCourseware = courseware => {
+  const normalized = normalizeCoursewareItem(courseware)
+  const index = uploadedCourseware.value.findIndex(item => item.id === normalized.id)
+
+  if (index >= 0) {
+    uploadedCourseware.value[index] = {
+      ...uploadedCourseware.value[index],
+      ...normalized,
+    }
+    return uploadedCourseware.value[index]
+  }
+
+  uploadedCourseware.value.unshift(normalized)
+  return normalized
+}
+
+const pollParseStatus = coursewareId => {
   const maxAttempts = 30
   let attempts = 0
 
@@ -106,28 +208,45 @@ const pollParseStatus = (coursewareId, coursewareItem) => {
     attempts += 1
     if (attempts > maxAttempts) {
       clearInterval(pollTimer)
-      coursewareItem.status = 'FAILED'
-      uploadStatus.value = { status: 'error', message: '解析超时，请重试' }
+      uploadStatus.value = { status: 'error', message: '解析超时，请稍后再试。' }
+      const courseware = latestCourseware.value
+      if (courseware) {
+        courseware.status = 'FAILED'
+      }
       return
     }
 
     try {
       const response = await getCoursewareDetail(coursewareId)
-      const status = response.data?.status
-      coursewareItem.status = status
+      const courseware = upsertCourseware({
+        id: response.data?.coursewareId || coursewareId,
+        name: response.data?.name || latestCourseware.value?.name,
+        status: response.data?.status,
+        createdAt: response.data?.createdAt || latestCourseware.value?.createdAt,
+        updatedAt: response.data?.updatedAt,
+        currentTaskStatus: response.data?.currentTaskStatus,
+      })
 
-      if (status === 'PARSED' || status === 'READY') {
+      if (courseware.status === 'PARSED' || courseware.status === 'READY') {
         clearInterval(pollTimer)
-        uploadStatus.value = { status: 'success', message: '解析完成，可以开始讲课了！' }
-        setTimeout(() => {
-          uploadStatus.value = null
-        }, 3000)
-      } else if (status === 'FAILED') {
+        uploadStatus.value = {
+          status: 'success',
+          message: courseware.status === 'READY' ? '课件已就绪，可以查看讲稿或进入课堂。' : '解析完成，正在准备讲稿。',
+          progress: 100,
+        }
+      } else if (courseware.status === 'FAILED') {
         clearInterval(pollTimer)
-        uploadStatus.value = { status: 'error', message: '课件解析失败，请重新上传' }
+        uploadStatus.value = { status: 'error', message: '课件处理失败，请重新上传。' }
+      } else {
+        const statusMeta = getCoursewareStatusMeta(courseware.status)
+        uploadStatus.value = {
+          status: 'success',
+          message: `当前进度：${statusMeta.text}`,
+          progress: uploadStatus.value?.progress ?? 100,
+        }
       }
     } catch {
-      // 轮询期间的瞬时网络错误不打断主流程
+      // 轮询期间的瞬时错误不打断主流程
     }
   }, 3000)
 }
@@ -143,7 +262,11 @@ const handleFileSelected = async file => {
   }
 
   uploadError.value = null
-  uploadStatus.value = { status: 'uploading', message: '上传中...', progress: 0 }
+  uploadStatus.value = {
+    status: 'uploading',
+    message: '正在上传课件...',
+    progress: 0,
+  }
 
   try {
     const response = await uploadCourseware(file, file.name, {
@@ -157,7 +280,7 @@ const handleFileSelected = async file => {
           const percent = Math.round((loaded / total) * 100)
           uploadStatus.value = {
             status: 'uploading',
-            message: `上传中... ${percent}%`,
+            message: `正在上传课件... ${percent}%`,
             progress: percent,
           }
           return
@@ -165,34 +288,37 @@ const handleFileSelected = async file => {
 
         uploadStatus.value = {
           status: 'uploading',
-          message: `上传中... 已上传 ${loaded.toLocaleString()} 字节`,
+          message: `正在上传课件... 已上传 ${loaded.toLocaleString()} 字节`,
           progress: uploadStatus.value?.progress ?? 0,
         }
       },
     })
 
     const coursewareId = response.data?.coursewareId
-    const coursewareItem = {
+    latestCoursewareId.value = coursewareId
+    const courseware = upsertCourseware({
       id: coursewareId,
       name: file.name,
-      size: file.size,
       status: 'PARSING',
       createdAt: new Date().toISOString(),
+    })
+
+    courseStore.addCourseware(courseware)
+    uploadStatus.value = {
+      status: 'success',
+      message: '上传成功，系统正在解析课件。',
+      progress: 100,
     }
 
-    uploadedCourseware.value.unshift(coursewareItem)
-    courseStore.addCourseware(coursewareItem)
-    uploadStatus.value = { status: 'success', message: '上传成功，正在解析...', progress: 100 }
-
-    pollParseStatus(coursewareId, coursewareItem)
+    pollParseStatus(coursewareId)
   } catch (error) {
-    uploadStatus.value = { status: 'error', message: '上传失败' }
-    showError(error, '上传失败，请重试')
+    uploadStatus.value = { status: 'error', message: '上传失败，请稍后重试。' }
+    showError(error, '上传失败，请稍后重试。')
   }
 }
 
 const handleError = error => {
-  showError(error, '文件处理失败，请重试')
+  showError(error, '文件校验失败，请检查格式后重试。')
 }
 
 const openCourseware = courseware => {
@@ -200,14 +326,18 @@ const openCourseware = courseware => {
   router.push({ name: 'Script', params: { coursewareId: courseware.id } })
 }
 
+const enterLecture = courseware => {
+  router.push({ name: 'Lecture', params: { coursewareId: courseware.id } })
+}
+
 const loadCoursewareList = async () => {
   try {
     const response = await listCourseware()
     if (Array.isArray(response.data?.items)) {
-      uploadedCourseware.value = response.data.items
+      uploadedCourseware.value = response.data.items.map(normalizeCoursewareItem)
     }
   } catch {
-    // 课件列表加载失败不影响上传主流程
+    // 列表加载失败不影响上传主流程
   }
 }
 
@@ -223,197 +353,130 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.upload-page {
-  padding: 2rem 1rem;
-  max-width: 100%;
+.upload-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) 320px;
+  gap: 1.25rem;
 }
 
-.upload-container {
-  max-width: 800px;
-  margin: 0 auto;
+.section-title {
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
 }
 
-h1 {
-  font-size: var(--font-size-2xl);
-  margin-bottom: 0.5rem;
-  color: var(--primary-color);
-  text-align: center;
+.upload-main-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
-.subtitle {
-  text-align: center;
+.upload-status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(131, 141, 184, 0.12);
+}
+
+.status-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.status-label {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.status-summary h3 {
+  margin: 0.35rem 0 0;
+  font-size: 1.25rem;
+}
+
+.status-text {
+  margin: 0.55rem 0 0;
   color: var(--text-secondary);
-  margin-bottom: 2rem;
+  line-height: 1.7;
 }
 
-.upload-status {
-  margin-top: 2rem;
-  padding: 1.5rem;
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
-  text-align: center;
-}
-
-.status-indicator {
-  display: inline-block;
-  width: 1rem;
-  height: 1rem;
-  border-radius: 50%;
-  margin-right: 0.5rem;
-  animation: pulse 1s infinite;
-}
-
-.status-indicator.success {
-  background: var(--success-color);
-  animation: none;
-}
-
-.status-indicator.error {
-  background: var(--error-color);
-  animation: none;
-}
-
-.progress-bar {
-  margin-top: 1rem;
-  height: 0.5rem;
-  background: var(--border-color);
-  border-radius: var(--radius-md);
+.progress-track {
+  width: 100%;
+  height: 0.65rem;
+  border-radius: 999px;
   overflow: hidden;
+  background: rgba(123, 133, 159, 0.14);
 }
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
   transition: width 0.3s ease;
 }
 
-.error-message {
-  margin-top: 1rem;
-  padding: 1rem;
-  background: rgba(245, 34, 45, 0.1);
-  border-left: 4px solid var(--error-color);
-  border-radius: var(--radius-md);
-  color: var(--error-color);
+.next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
-.courseware-list {
-  margin-top: 3rem;
-}
-
-.courseware-list h2 {
-  font-size: var(--font-size-lg);
-  margin-bottom: 1rem;
-  color: var(--primary-color);
-}
-
-.list-items {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+.upload-side-column {
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
 }
 
-.list-item {
+.side-card h3 {
+  margin: 0 0 1rem;
+  font-size: 1.1rem;
+}
+
+.flow-list,
+.tip-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--text-secondary);
+  line-height: 1.9;
+}
+
+.inline-error {
   display: flex;
   align-items: center;
-  padding: 1rem;
-  background: white;
-  border: 1px solid var(--border-color);
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 0.95rem 1rem;
   border-radius: var(--radius-md);
+  background: rgba(230, 84, 106, 0.08);
+  border: 1px solid rgba(230, 84, 106, 0.15);
+  color: #b93f59;
+}
+
+.inline-error button {
+  color: inherit;
+  font-weight: 600;
   cursor: pointer;
-  transition: all var(--transition-base);
 }
 
-.list-item:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
-}
-
-.item-icon {
-  font-size: 2rem;
-  margin-right: 1rem;
-}
-
-.item-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.item-title {
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.item-meta {
-  font-size: var(--font-size-sm);
-  color: var(--text-hint);
-  margin: 0.25rem 0 0 0;
-}
-
-.item-status {
-  padding: 0.25rem 0.75rem;
-  border-radius: var(--radius-sm);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-}
-
-.item-status.parsing {
-  background: rgba(250, 173, 20, 0.1);
-  color: var(--warning-color);
-}
-
-.item-status.success {
-  background: rgba(82, 196, 26, 0.1);
-  color: var(--success-color);
-}
-
-.item-status.error {
-  background: rgba(245, 34, 45, 0.1);
-  color: var(--error-color);
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.5;
-  }
-}
-
-@media (max-width: 768px) {
-  .upload-page {
-    padding: 1.5rem 1rem;
-  }
-
-  h1 {
-    font-size: var(--font-size-xl);
-  }
-
-  .list-items {
+@media (max-width: 1024px) {
+  .upload-layout {
     grid-template-columns: 1fr;
   }
 }
 
-@media (max-width: 480px) {
-  .upload-page {
-    padding: 1rem 0.75rem;
+@media (max-width: 640px) {
+  .status-summary {
+    flex-direction: column;
   }
 
-  .upload-container {
-    margin: 0;
-  }
-
-  .list-item {
-    padding: 0.75rem;
-  }
-
-  .item-icon {
-    font-size: 1.5rem;
+  .next-actions {
+    flex-direction: column;
   }
 }
 </style>

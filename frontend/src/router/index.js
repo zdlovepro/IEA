@@ -1,5 +1,4 @@
 import { createRouter, createWebHistory } from 'vue-router'
-// 首页直接引入（不懒加载），保证首屏速度
 import Home from '../views/Home.vue'
 
 const routes = [
@@ -14,7 +13,6 @@ const routes = [
   {
     path: '/upload',
     name: 'Upload',
-    // 非首屏路由均使用动态 import 懒加载，减小初始包体积
     component: () => import('../views/Upload.vue'),
     meta: {
       title: '上传课件',
@@ -25,7 +23,7 @@ const routes = [
     name: 'Courses',
     component: () => import('../views/Courses.vue'),
     meta: {
-      title: '我的课程',
+      title: '课程列表',
     },
   },
   {
@@ -33,7 +31,7 @@ const routes = [
     name: 'Mine',
     component: () => import('../views/Mine.vue'),
     meta: {
-      title: '我的',
+      title: '我的课程',
     },
   },
   {
@@ -41,7 +39,7 @@ const routes = [
     name: 'Lecture',
     component: () => import('../views/Lecture.vue'),
     meta: {
-      title: '讲课',
+      title: '互动课堂',
     },
   },
   {
@@ -49,7 +47,7 @@ const routes = [
     name: 'Script',
     component: () => import('../views/Script.vue'),
     meta: {
-      title: '讲稿预览',
+      title: '课件讲稿',
     },
   },
   {
@@ -67,9 +65,9 @@ const router = createRouter({
   routes,
 })
 
-// 全局前置守卫：每次路由切换时同步更新浏览器标签页标题
 router.beforeEach((to, from, next) => {
-  document.title = `${to.meta.title || 'Interactive-Edu-Agent'} - ${import.meta.env.VITE_APP_TITLE}`
+  const appTitle = import.meta.env.VITE_APP_TITLE || 'IEA 智能教学助手'
+  document.title = `${to.meta.title || 'Interactive-Edu-Agent'} - ${appTitle}`
   next()
 })
 
