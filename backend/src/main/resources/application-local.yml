@@ -14,6 +14,7 @@ python:
     base-url: ${PYTHON_CLIENT_BASE_URL:http://localhost:8001}
     script-generate-path: ${PYTHON_SCRIPT_GENERATE_PATH:/python/v1/script/generate}
     qa-path: ${PYTHON_QA_PATH:/python/v1/qa/ask-text}
+    qa-stream-path: ${PYTHON_QA_STREAM_PATH:/python/v1/qa/stream}
 
 tts:
   enabled: ${TTS_ENABLED:false}

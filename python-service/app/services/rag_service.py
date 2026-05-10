@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
 
 from langchain.schema import HumanMessage, SystemMessage
 
@@ -12,24 +13,22 @@ from app.utils.logger import logger
 
 _SYSTEM_PROMPT = """\
 你是课堂中的 AI 助教。
-你只能根据给定的课件 evidence 回答问题，不能补充课件之外的事实、推测、背景知识或案例。
+你只能根据课件 evidence 回答问题，不要补充课件之外的事实、推测、背景知识或案例。
 如果 evidence 不足，请明确回答：“课件中没有直接覆盖该内容”。
 回答要简洁、口语化，适合课堂中直接朗读。
-不要编造课件没有的信息。"""
+不要编造课件没有的信息。
+"""
+
+_NO_EVIDENCE_ANSWER = "课件中没有直接覆盖该内容。你可以换个更贴近当前页的问题，或者告诉我你想确认哪一页。"
+_STREAM_FALLBACK_CHUNK_SIZE = 12
 
 
 def answer_question(request: QaAskTextRequest) -> QaAskTextResponse:
     start_at = time.perf_counter()
-    evidence_context = retrieve_context(
-        courseware_id=request.courseware_id,
-        question=request.question,
-        page_index=request.page_index,
-        top_k=request.top_k,
-    )
+    evidence_context = _retrieve_evidence_context(request)
 
     if not evidence_context:
-        answer = "课件中没有直接覆盖该内容。你可以换个更贴近当前页的问题，或者告诉我想确认哪一页。"
-        return _build_response(answer, evidence_context, start_at)
+        return _build_response(_NO_EVIDENCE_ANSWER, evidence_context, start_at)
 
     if not settings.LLM_API_KEY:
         logger.info(
@@ -38,17 +37,12 @@ def answer_question(request: QaAskTextRequest) -> QaAskTextResponse:
             request.session_id,
             len(evidence_context),
         )
-        answer = _build_template_answer(request.question, evidence_context)
-        return _build_response(answer, evidence_context, start_at)
+        return _build_response(_build_template_answer(evidence_context), evidence_context, start_at)
 
     try:
-        messages = [
-            SystemMessage(content=_SYSTEM_PROMPT),
-            HumanMessage(content=_build_user_prompt(request.question, request.page_index, evidence_context)),
-        ]
-        answer = (get_llm_client().invoke(messages) or "").strip()
+        answer = get_llm_client().invoke(_build_messages(request.question, request.page_index, evidence_context)).strip()
         if not answer:
-            answer = _build_template_answer(request.question, evidence_context)
+            answer = _build_template_answer(evidence_context)
         logger.info(
             "RAG QA answered by LLM. coursewareId=%s sessionId=%s evidenceCount=%s",
             request.courseware_id,
@@ -63,8 +57,76 @@ def answer_question(request: QaAskTextRequest) -> QaAskTextResponse:
             request.session_id,
             str(exc),
         )
-        answer = _build_template_answer(request.question, evidence_context)
-        return _build_response(answer, evidence_context, start_at)
+        return _build_response(_build_template_answer(evidence_context), evidence_context, start_at)
+
+
+def stream_answer_events(request: QaAskTextRequest) -> Iterator[dict[str, str]]:
+    evidence_context = _retrieve_evidence_context(request)
+
+    if not evidence_context:
+        logger.info(
+            "RAG QA stream missing evidence. coursewareId=%s sessionId=%s",
+            request.courseware_id,
+            request.session_id,
+        )
+        yield from _simulate_stream_events(_NO_EVIDENCE_ANSWER)
+        return
+
+    if not settings.LLM_API_KEY:
+        logger.info(
+            "LLM API key missing for QA stream. Use evidence template answer. coursewareId=%s sessionId=%s evidenceCount=%s",
+            request.courseware_id,
+            request.session_id,
+            len(evidence_context),
+        )
+        yield from _simulate_stream_events(_build_template_answer(evidence_context))
+        return
+
+    try:
+        emitted = False
+        output_length = 0
+        for delta in get_llm_client().stream(_build_messages(request.question, request.page_index, evidence_context)):
+            if not delta:
+                continue
+            emitted = True
+            output_length += len(delta)
+            yield {"type": "delta", "content": delta}
+
+        if emitted:
+            logger.info(
+                "RAG QA streamed by LLM. coursewareId=%s sessionId=%s evidenceCount=%s outputLength=%s",
+                request.courseware_id,
+                request.session_id,
+                len(evidence_context),
+                output_length,
+            )
+            return
+
+        yield from _simulate_stream_events(_build_template_answer(evidence_context))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "RAG QA stream degraded to template answer. coursewareId=%s sessionId=%s reason=%s",
+            request.courseware_id,
+            request.session_id,
+            str(exc),
+        )
+        yield from _simulate_stream_events(_build_template_answer(evidence_context))
+
+
+def _retrieve_evidence_context(request: QaAskTextRequest) -> list[dict]:
+    return retrieve_context(
+        courseware_id=request.courseware_id,
+        question=request.question,
+        page_index=request.page_index,
+        top_k=request.top_k,
+    )
+
+
+def _build_messages(question: str, page_index: int | None, evidence_context: list[dict]) -> list[SystemMessage | HumanMessage]:
+    return [
+        SystemMessage(content=_SYSTEM_PROMPT),
+        HumanMessage(content=_build_user_prompt(question, page_index, evidence_context)),
+    ]
 
 
 def _build_user_prompt(question: str, page_index: int | None, evidence_context: list[dict]) -> str:
@@ -81,21 +143,21 @@ def _build_user_prompt(question: str, page_index: int | None, evidence_context: 
         )
         lines.append(f"证据内容：{_trim_text(item.get('text', ''))}")
 
-    lines.append("请只依据这些证据作答；如果证据不够，请直接回答“课件中没有直接覆盖该内容”。")
+    lines.append("请只依据这些证据作答；如果证据不足，请直接回答“课件中没有直接覆盖该内容”。")
     return "\n".join(lines)
 
 
-def _build_template_answer(question: str, evidence_context: list[dict]) -> str:
+def _build_template_answer(evidence_context: list[dict]) -> str:
     primary_evidence = evidence_context[0] if evidence_context else {}
-    page_index = primary_evidence.get("page_index")
+    page_index = _safe_page_index(primary_evidence.get("page_index"))
     text = _trim_text(primary_evidence.get("text", ""), limit=140)
 
     if not text:
-        return "课件中没有直接覆盖该内容。你可以换个更贴近当前课件的问题继续问我。"
+        return _NO_EVIDENCE_ANSWER
 
-    if page_index:
+    if page_index is not None:
         return (
-            f"根据课件第{page_index}页，这个问题可以先这样理解：{text}"
+            f"根据课件第 {page_index} 页，可以先这样理解：{text}"
             "如果你愿意，我可以继续帮你把这一页的重点再拆得更清楚一点。"
         )
 
@@ -122,6 +184,22 @@ def _build_response(answer: str, evidence_context: list[dict], start_at: float) 
         evidence=evidence,
         latency_ms=latency_ms,
     )
+
+
+def _simulate_stream_events(answer: str) -> Iterator[dict[str, str]]:
+    for chunk in _chunk_text_for_stream(answer):
+        yield {"type": "delta", "content": chunk}
+
+
+def _chunk_text_for_stream(answer: str) -> list[str]:
+    normalized = " ".join(str(answer or "").split()).strip()
+    if not normalized:
+        return []
+
+    return [
+        normalized[index:index + _STREAM_FALLBACK_CHUNK_SIZE]
+        for index in range(0, len(normalized), _STREAM_FALLBACK_CHUNK_SIZE)
+    ]
 
 
 def _trim_text(text: str, limit: int = 220) -> str:

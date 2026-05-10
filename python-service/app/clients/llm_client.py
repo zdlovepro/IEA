@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from collections.abc import Iterator
 
 from langchain.schema import BaseMessage
 from openai import OpenAI
@@ -24,7 +24,7 @@ class LLMClient:
     def client(self) -> OpenAI:
         return self._client
 
-    def invoke(self, messages: list[BaseMessage]) -> Optional[str]:
+    def invoke(self, messages: list[BaseMessage]) -> str:
         logger.info(
             "Invoking LLM. messageCount=%s model=%s reasoningEffort=%s thinkingEnabled=%s",
             len(messages),
@@ -49,6 +49,41 @@ class LLMClient:
         logger.info("LLM invocation completed. outputLength=%s", len(content))
         return content
 
+    def stream(self, messages: list[BaseMessage]) -> Iterator[str]:
+        logger.info(
+            "Streaming LLM output. messageCount=%s model=%s reasoningEffort=%s thinkingEnabled=%s",
+            len(messages),
+            settings.LLM_MODEL_NAME,
+            settings.LLM_REASONING_EFFORT,
+            settings.LLM_ENABLE_THINKING,
+        )
+
+        stream = self._client.chat.completions.create(
+            model=settings.LLM_MODEL_NAME,
+            messages=[_to_openai_message(message) for message in messages],
+            stream=True,
+            reasoning_effort=settings.LLM_REASONING_EFFORT,
+            extra_body=_build_extra_body(),
+            timeout=settings.LLM_TIMEOUT,
+        )
+
+        emitted = False
+        total_length = 0
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if not delta:
+                continue
+            emitted = True
+            total_length += len(delta)
+            yield delta
+
+        if not emitted:
+            raise ModelOutputException("模型未返回有效内容")
+
+        logger.info("LLM streaming completed. outputLength=%s", total_length)
+
 
 def _to_openai_message(message: BaseMessage) -> dict[str, str]:
     role = "user"
@@ -69,7 +104,7 @@ def _build_extra_body() -> dict[str, object] | None:
     return {"thinking": {"type": "enabled"}}
 
 
-_llm_client: Optional[LLMClient] = None
+_llm_client: LLMClient | None = None
 
 
 def get_llm_client() -> LLMClient:

@@ -16,13 +16,18 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.NoSuchElementException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -158,11 +163,81 @@ class QaServiceTest {
     }
 
     @Test
+    @DisplayName("streams Python SSE when Python QA stream succeeds")
+    void streamText_pythonSuccess_proxiesSse() throws Exception {
+        LectureService.SessionSnapshot session = new LectureService.SessionSnapshot(
+                "sess_stream_1",
+                "cware_stream_1",
+                "user_stream_1",
+                4,
+                "PLAYING"
+        );
+        when(lectureService.getSessionSnapshot("sess_stream_1")).thenReturn(session);
+        doAnswer(invocation -> {
+            PythonQaRequest request = invocation.getArgument(0);
+            ByteArrayOutputStream sink = new ByteArrayOutputStream();
+            sink.write(("data: {\"type\":\"delta\",\"content\":\"stream:" + request.getCoursewareId() + "\"}\n\n"
+                    + "data: {\"type\":\"done\"}\n\n").getBytes(StandardCharsets.UTF_8));
+            invocation.<java.io.OutputStream>getArgument(1).write(sink.toByteArray());
+            return null;
+        }).when(pythonQaClient).streamText(any(PythonQaRequest.class), any(java.io.OutputStream.class));
+
+        StreamingResponseBody body = qaService.streamText("sess_stream_1", "请开始流式回答", 4);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        body.writeTo(output);
+
+        String payload = output.toString(StandardCharsets.UTF_8);
+        assertThat(payload).contains("data: {\"type\":\"delta\",\"content\":\"stream:cware_stream_1\"}");
+        assertThat(payload).contains("data: {\"type\":\"done\"}");
+
+        ArgumentCaptor<PythonQaRequest> captor = ArgumentCaptor.forClass(PythonQaRequest.class);
+        verify(pythonQaClient).streamText(captor.capture(), any(java.io.OutputStream.class));
+        assertThat(captor.getValue().getSessionId()).isEqualTo("sess_stream_1");
+        assertThat(captor.getValue().getCoursewareId()).isEqualTo("cware_stream_1");
+        assertThat(captor.getValue().getPageIndex()).isEqualTo(4);
+        assertThat(captor.getValue().getQuestion()).isEqualTo("请开始流式回答");
+        assertThat(captor.getValue().getTopK()).isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("returns fallback SSE when Python QA stream is unavailable")
+    void streamText_pythonUnavailable_returnsFallbackSse() throws Exception {
+        LectureService.SessionSnapshot session = new LectureService.SessionSnapshot(
+                "sess_stream_2",
+                "cware_stream_2",
+                "user_stream_2",
+                2,
+                "PLAYING"
+        );
+        when(lectureService.getSessionSnapshot("sess_stream_2")).thenReturn(session);
+        doThrow(new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "python down"))
+                .when(pythonQaClient).streamText(any(PythonQaRequest.class), any(java.io.OutputStream.class));
+
+        StreamingResponseBody body = qaService.streamText("sess_stream_2", "流式服务还在吗", null);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        body.writeTo(output);
+
+        String payload = output.toString(StandardCharsets.UTF_8);
+        assertThat(payload).contains("当前问答服务暂时不可用，请稍后重试。");
+        assertThat(payload).contains("data: {\"type\":\"done\"}");
+    }
+
+    @Test
     @DisplayName("throws when session does not exist")
     void askText_sessionNotFound_throwsNoSuchElementException() {
         when(lectureService.getSessionSnapshot("missing")).thenThrow(new NoSuchElementException("session missing"));
 
         assertThatThrownBy(() -> qaService.askText("missing", "问题"))
+                .isInstanceOf(NoSuchElementException.class);
+        verifyNoInteractions(pythonQaClient, coursewareService);
+    }
+
+    @Test
+    @DisplayName("streaming also throws when session does not exist")
+    void streamText_sessionNotFound_throwsNoSuchElementException() {
+        when(lectureService.getSessionSnapshot("missing")).thenThrow(new NoSuchElementException("session missing"));
+
+        assertThatThrownBy(() -> qaService.streamText("missing", "问题", 5))
                 .isInstanceOf(NoSuchElementException.class);
         verifyNoInteractions(pythonQaClient, coursewareService);
     }

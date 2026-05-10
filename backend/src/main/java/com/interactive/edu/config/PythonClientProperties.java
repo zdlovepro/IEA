@@ -20,6 +20,9 @@ public class PythonClientProperties {
     /** QA API path, e.g. /python/v1/qa/ask-text */
     private String qaPath = "/python/v1/qa/ask-text";
 
+    /** QA SSE API path, e.g. /python/v1/qa/stream */
+    private String qaStreamPath = "/python/v1/qa/stream";
+
     /** HTTP connect timeout. */
     private Duration connectTimeout = Duration.ofSeconds(5);
 
