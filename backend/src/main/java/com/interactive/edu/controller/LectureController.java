@@ -10,6 +10,7 @@ import com.interactive.edu.vo.record.QaRecordView;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -24,6 +25,7 @@ import java.util.List;
 @RequestMapping("/api/v1/lecture")
 @RequiredArgsConstructor
 @Validated
+@Slf4j
 public class LectureController {
 
     private final LectureService lectureService;
@@ -32,7 +34,7 @@ public class LectureController {
     @PostMapping("/start")
     public BaseResponse<LectureSessionView> start(@Valid @RequestBody StartLectureRequest request) {
         LectureSessionView sessionView = lectureService.startLecture(request.coursewareId(), request.userId());
-        lectureRecordService.registerSession(sessionView.sessionId());
+        registerSessionSafely(sessionView.sessionId());
         return BaseResponse.ok(sessionView);
     }
 
@@ -49,8 +51,24 @@ public class LectureController {
     @PostMapping("/resume")
     public BaseResponse<LectureSessionView> resume(@Valid @RequestBody ResumeLectureRequest request) {
         LectureSessionView sessionView = lectureService.resume(request.sessionId());
-        lectureRecordService.tryMarkLatestInterruptResumed(request.sessionId());
+        markLatestInterruptResumedSafely(request.sessionId());
         return BaseResponse.ok(sessionView);
+    }
+
+    private void registerSessionSafely(String sessionId) {
+        try {
+            lectureRecordService.registerSession(sessionId);
+        } catch (Exception ex) {
+            log.warn("Failed to register lecture record session. sessionId={}, reason={}", sessionId, ex.getMessage());
+        }
+    }
+
+    private void markLatestInterruptResumedSafely(String sessionId) {
+        try {
+            lectureRecordService.tryMarkLatestInterruptResumed(sessionId);
+        } catch (Exception ex) {
+            log.warn("Failed to mark interrupt resumed. sessionId={}, reason={}", sessionId, ex.getMessage());
+        }
     }
 
     @GetMapping("/{sessionId}/records")

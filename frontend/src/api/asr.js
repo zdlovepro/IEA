@@ -14,6 +14,7 @@ export function recognizeAudio({ file, sessionId, pageIndex }, config = {}) {
   }
 
   return request.post(ASR_API.RECOGNIZE, formData, {
+    timeout: 60000,
     ...config,
     headers: {
       'Content-Type': 'multipart/form-data',

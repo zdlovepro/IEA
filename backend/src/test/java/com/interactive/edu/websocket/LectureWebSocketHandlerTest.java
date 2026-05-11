@@ -25,6 +25,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -140,5 +141,39 @@ class LectureWebSocketHandlerTest {
         assertThat(statePayload.path("type").asText()).isEqualTo("state");
         assertThat(statePayload.path("payload").path("status").asText()).isEqualTo("PLAYING");
         assertThat(statePayload.path("payload").path("currentTime").asDouble()).isEqualTo(18.6);
+    }
+
+    @Test
+    @DisplayName("interrupt still acknowledges when record persistence fails")
+    void interrupt_recordFailure_stillAcknowledges() throws Exception {
+        handler.afterConnectionEstablished(webSocketSession);
+
+        LectureService.LectureRealtimeState interruptedState = new LectureService.LectureRealtimeState(
+                "sess_ws_1",
+                "cware_ws_1",
+                "INTERRUPTED",
+                2,
+                9.5,
+                Instant.now(),
+                new CurrentNodeView("node_2", 2, "Page 2 content", null)
+        );
+        when(lectureService.interrupt("sess_ws_1", 2, 9.5)).thenReturn(interruptedState);
+        doThrow(new RuntimeException("disk full"))
+                .when(lectureRecordService)
+                .createInterruptRecord("sess_ws_1", "cware_ws_1", 2, 9.5);
+
+        handler.handleMessage(webSocketSession, new TextMessage("""
+                {"type":"interrupt","sessionId":"sess_ws_1","pageIndex":2,"currentTime":9.5}
+                """));
+
+        ArgumentCaptor<TextMessage> messageCaptor = ArgumentCaptor.forClass(TextMessage.class);
+        verify(webSocketSession).sendMessage(messageCaptor.capture());
+        JsonNode payload = objectMapper.readTree(messageCaptor.getValue().getPayload());
+
+        assertThat(payload.path("type").asText()).isEqualTo("ack");
+        assertThat(payload.path("payload").path("status").asText()).isEqualTo("INTERRUPTED");
+        assertThat(payload.path("payload").path("pageIndex").asInt()).isEqualTo(2);
+        assertThat(payload.path("payload").path("currentTime").asDouble()).isEqualTo(9.5);
+        assertThat(payload.path("payload").has("interruptId")).isFalse();
     }
 }

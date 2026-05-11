@@ -28,7 +28,7 @@ public class QaService {
 
     private static final String STREAM_FALLBACK_MESSAGE = "当前问答服务暂时不可用，请稍后重试。";
     private static final byte[] STREAM_FALLBACK_BYTES = (
-            "data: {\"type\":\"delta\",\"content\":\"" + STREAM_FALLBACK_MESSAGE + "\"}\n\n"
+            "data: {\"type\":\"error\",\"message\":\"" + STREAM_FALLBACK_MESSAGE + "\"}\n\n"
                     + "data: {\"type\":\"done\"}\n\n"
     ).getBytes(StandardCharsets.UTF_8);
 

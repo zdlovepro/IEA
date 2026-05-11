@@ -38,6 +38,7 @@ public class PythonParseClient {
 
     public ParsePayload parse(PythonParseRequest req) {
         String url = props.getBaseUrl() + props.getParsePath();
+        long startAt = System.currentTimeMillis();
         try {
             ParseEnvelope envelope = restClient.post()
                     .uri(url)
@@ -57,10 +58,20 @@ public class PythonParseClient {
                 );
             }
 
-            log.info("Python parse succeeded. coursewareId={}, pages={}",
-                    req.getCoursewareId(), envelope.data().pages());
+            log.info(
+                    "Python parse succeeded. coursewareId={}, pages={}, latencyMs={}",
+                    req.getCoursewareId(),
+                    envelope.data().pages(),
+                    Math.max(1, System.currentTimeMillis() - startAt)
+            );
             return envelope.data();
         } catch (ServiceException ex) {
+            log.warn(
+                    "Python parse returned business failure. coursewareId={}, latencyMs={}, reason={}",
+                    req.getCoursewareId(),
+                    Math.max(1, System.currentTimeMillis() - startAt),
+                    ex.getMessage()
+            );
             throw ex;
         } catch (RestClientException ex) {
             throw new ServiceException(ErrorCode.PYTHON_SERVICE_ERROR, "课件解析服务调用失败", ex);

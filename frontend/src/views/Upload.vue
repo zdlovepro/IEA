@@ -79,7 +79,10 @@
 
       <div v-if="uploadError" class="inline-error">
         <span>{{ uploadError }}</span>
-        <button @click="uploadError = null">关闭</button>
+        <div class="inline-error__actions">
+          <button v-if="canRetryUpload" @click="retryLastUpload">重新上传</button>
+          <button @click="uploadError = null">关闭</button>
+        </div>
       </div>
 
       <div v-if="uploadedCourseware.length" class="grid-auto">
@@ -122,6 +125,7 @@ const uploadStatus = ref(null)
 const uploadError = ref(null)
 const uploadedCourseware = ref([])
 const latestCoursewareId = ref('')
+const lastSelectedFile = ref(null)
 
 let pollTimer = null
 
@@ -166,6 +170,9 @@ const currentStatusBadge = computed(() => {
 })
 
 const showProgress = computed(() => uploadStatus.value && uploadStatus.value.progress !== undefined)
+const canRetryUpload = computed(
+  () => Boolean(lastSelectedFile.value) && uploadStatus.value?.status !== 'uploading',
+)
 
 const showError = (error, fallback) => {
   uploadError.value = getErrorMessage(error, fallback)
@@ -256,6 +263,8 @@ const handleFileSelected = async file => {
     return
   }
 
+  lastSelectedFile.value = file
+
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
@@ -315,6 +324,13 @@ const handleFileSelected = async file => {
     uploadStatus.value = { status: 'error', message: '上传失败，请稍后重试。' }
     showError(error, '上传失败，请稍后重试。')
   }
+}
+
+const retryLastUpload = async () => {
+  if (!lastSelectedFile.value) {
+    return
+  }
+  await handleFileSelected(lastSelectedFile.value)
 }
 
 const handleError = error => {
@@ -456,6 +472,12 @@ onUnmounted(() => {
   background: rgba(230, 84, 106, 0.08);
   border: 1px solid rgba(230, 84, 106, 0.15);
   color: #b93f59;
+}
+
+.inline-error__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 .inline-error button {

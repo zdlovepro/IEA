@@ -109,23 +109,20 @@ public class LectureWebSocketHandler extends TextWebSocketHandler {
                 signalMessage.getPageIndex(),
                 signalMessage.getCurrentTime()
         );
-        InterruptRecordView interruptRecord = lectureRecordService.createInterruptRecord(
-                state.sessionId(),
-                state.coursewareId(),
-                state.currentPageIndex(),
-                state.breakpointTime()
-        );
+        InterruptRecordView interruptRecord = createInterruptRecordSafely(state);
         String asrText = extractAsrText(signalMessage);
         if (StringUtils.hasText(asrText)) {
-            interruptRecord = lectureRecordService.updateLatestInterruptAsrText(state.sessionId(), asrText);
+            interruptRecord = updateInterruptAsrTextSafely(state, asrText, interruptRecord);
         }
 
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("interruptId", interruptRecord.interruptId());
         payload.put("status", state.status());
         payload.put("pageIndex", state.currentPageIndex());
         payload.put("currentTime", state.breakpointTime());
-        if (StringUtils.hasText(interruptRecord.asrText())) {
+        if (interruptRecord != null) {
+            payload.put("interruptId", interruptRecord.interruptId());
+        }
+        if (interruptRecord != null && StringUtils.hasText(interruptRecord.asrText())) {
             payload.put("asrText", interruptRecord.asrText());
         }
         sendSafely(session, LectureSignalResponse.ack(sessionId, payload));
@@ -133,7 +130,7 @@ public class LectureWebSocketHandler extends TextWebSocketHandler {
 
     private void handleResume(WebSocketSession session, String sessionId) {
         LectureService.ResumeState resumeState = lectureService.resumeFromBreakpoint(sessionId);
-        lectureRecordService.tryMarkLatestInterruptResumed(sessionId);
+        markLatestInterruptResumedSafely(sessionId);
 
         Map<String, Object> ackPayload = new LinkedHashMap<>();
         ackPayload.put("status", LectureSessionStatus.RESUMING.name());
@@ -207,6 +204,53 @@ public class LectureWebSocketHandler extends TextWebSocketHandler {
         }
         String text = raw == null ? null : raw.toString();
         return StringUtils.hasText(text) ? text.trim() : null;
+    }
+
+    private InterruptRecordView createInterruptRecordSafely(LectureService.LectureRealtimeState state) {
+        try {
+            return lectureRecordService.createInterruptRecord(
+                    state.sessionId(),
+                    state.coursewareId(),
+                    state.currentPageIndex(),
+                    state.breakpointTime()
+            );
+        } catch (Exception ex) {
+            log.warn(
+                    "Failed to persist interrupt record. sessionId={}, coursewareId={}, pageIndex={}, reason={}",
+                    state.sessionId(),
+                    state.coursewareId(),
+                    state.currentPageIndex(),
+                    ex.getMessage()
+            );
+            return null;
+        }
+    }
+
+    private InterruptRecordView updateInterruptAsrTextSafely(
+            LectureService.LectureRealtimeState state,
+            String asrText,
+            InterruptRecordView fallbackRecord
+    ) {
+        try {
+            return lectureRecordService.updateLatestInterruptAsrText(state.sessionId(), asrText);
+        } catch (Exception ex) {
+            log.warn(
+                    "Failed to persist interrupt ASR text. sessionId={}, coursewareId={}, pageIndex={}, reason={}",
+                    state.sessionId(),
+                    state.coursewareId(),
+                    state.currentPageIndex(),
+                    ex.getMessage()
+            );
+            return fallbackRecord;
+        }
+    }
+
+    private void markLatestInterruptResumedSafely(String sessionId) {
+        try {
+            lectureRecordService.tryMarkLatestInterruptResumed(sessionId);
+        } catch (Exception ex) {
+            log.warn("Failed to mark interrupt resumed from websocket. sessionId={}, reason={}", sessionId, ex.getMessage());
+        }
     }
 
     private void sendSafely(WebSocketSession session, LectureSignalResponse response) {
