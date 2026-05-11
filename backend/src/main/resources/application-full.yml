@@ -35,6 +35,18 @@ python:
     qa-path: ${PYTHON_QA_PATH:/python/v1/qa/ask-text}
     qa-stream-path: ${PYTHON_QA_STREAM_PATH:/python/v1/qa/stream}
 
+asr:
+  enabled: ${ASR_ENABLED:false}
+  provider: ${ASR_PROVIDER:qwen}
+  qwen:
+    api-key: ${ASR_QWEN_API_KEY:${DASHSCOPE_API_KEY:}}
+    base-url: ${QWEN_ASR_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    model: ${QWEN_ASR_MODEL:qwen3-asr-flash}
+    enable-itn: ${QWEN_ASR_ENABLE_ITN:true}
+    language: ${QWEN_ASR_LANGUAGE:}
+    max-file-size-mb: ${QWEN_ASR_MAX_FILE_SIZE_MB:10}
+    timeout-seconds: ${QWEN_ASR_TIMEOUT_SECONDS:60}
+
 tts:
   enabled: ${TTS_ENABLED:false}
   aliyun:

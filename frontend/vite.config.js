@@ -1,18 +1,20 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import path from 'path'
+import { fileURLToPath, URL } from 'node:url'
+
+const resolveFromRoot = relativePath => fileURLToPath(new URL(relativePath, import.meta.url))
 
 export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, './src'),
-      '@components': path.resolve(__dirname, './src/components'),
-      '@views': path.resolve(__dirname, './src/views'),
-      '@stores': path.resolve(__dirname, './src/stores'),
-      '@utils': path.resolve(__dirname, './src/utils'),
-      '@assets': path.resolve(__dirname, './src/assets'),
-      '@constants': path.resolve(__dirname, './src/constants'),
+      '@': resolveFromRoot('./src'),
+      '@components': resolveFromRoot('./src/components'),
+      '@views': resolveFromRoot('./src/views'),
+      '@stores': resolveFromRoot('./src/stores'),
+      '@utils': resolveFromRoot('./src/utils'),
+      '@assets': resolveFromRoot('./src/assets'),
+      '@constants': resolveFromRoot('./src/constants'),
     },
   },
   server: {
