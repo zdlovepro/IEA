@@ -24,6 +24,7 @@ export const LECTURE_API = {
 
 export const QA_API = {
   ASK_TEXT: '/qa/ask-text',
+  STREAM: '/qa/stream',
 }
 
 export const ASR_API = {

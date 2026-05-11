@@ -188,6 +188,10 @@
               <div class="bubble bubble--assistant">
                 <span class="bubble-role">AI 助教</span>
                 <div class="bubble-answer" v-html="renderMd(qa.answer)"></div>
+                <div v-if="qa.streaming" class="bubble-streaming">
+                  <span class="bubble-streaming__dot"></span>
+                  <span>正在生成回答</span>
+                </div>
 
                 <details v-if="qa.evidence?.length" class="evidence-panel">
                   <summary>查看 evidence（{{ qa.evidence.length }}）</summary>
@@ -220,6 +224,9 @@
               placeholder="输入你的问题，按 Enter 发送"
               @keyup.enter="submitQuestion"
             />
+            <AppButton v-if="isStreamingAnswer" variant="secondary" @click="stopStreamingAnswer">
+              停止生成
+            </AppButton>
             <AppButton :disabled="!question.trim() || isAsking" @click="submitQuestion">
               {{ isAsking ? '思考中...' : '发送问题' }}
             </AppButton>
@@ -246,7 +253,7 @@ import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { recognizeAudio } from '@/api/asr'
 import { getCoursewareScript } from '@/api/courseware'
 import { pauseLecture, resumeLecture, startLecture } from '@/api/lecture'
-import { askText } from '@/api/qa'
+import { askText, streamAskText } from '@/api/qa'
 import { LECTURE_STATE, LECTURE_STATUS_MAP, normalizeLectureStatus } from '@/constants/lecture'
 import { useLectureStore } from '@/stores/lecture'
 import audioPlayer from '@/utils/audioPlayer'
@@ -299,6 +306,8 @@ let socketMessageUnsubscribe = null
 let socketErrorUnsubscribe = null
 let hasShownSocketError = false
 let vad = null
+let qaStreamClient = null
+let activeStreamingQaItemId = null
 
 const lectureStatus = computed(() => normalizeLectureStatus(lectureStore.status))
 const statusMeta = computed(
@@ -345,7 +354,7 @@ const formattedDuration = computed(() => {
   }
   return formatDuration(audioDuration.value)
 })
-const qaStatusText = computed(() => (isStreamingAnswer.value ? '思考中' : '等待提问'))
+const qaStatusText = computed(() => (isStreamingAnswer.value ? '生成中' : '等待提问'))
 const voiceStatusText = computed(() => {
   switch (voiceInterruptState.value) {
     case VOICE_INTERRUPT_STATE.LISTENING:
@@ -1141,6 +1150,42 @@ const processRecordedQuestion = async blob => {
   }
 }
 
+const finalizeQuestionFlow = async ({ qaItem, autoResume = false } = {}) => {
+  if (qaItem) {
+    qaItem.streaming = false
+  }
+
+  activeStreamingQaItemId = null
+  qaStreamClient = null
+  isAsking.value = false
+  lectureStore.finishAnswer()
+
+  if (autoResume && lectureStore.breakpointPage) {
+    await handleResumeLecture()
+  } else {
+    restoreLectureStatusAfterAnswer()
+  }
+
+  scrollQAToBottom()
+}
+
+const fallbackAskQuestion = async ({ normalizedQuestion, qaItem, autoResume = false } = {}) => {
+  const response = await askText({
+    sessionId: lectureStore.sessionId,
+    question: normalizedQuestion,
+  })
+  qaItem.answer = response.data?.answer || '当前没有获取到有效回答。'
+  qaItem.evidence = Array.isArray(response.data?.evidence) ? response.data.evidence : []
+  lectureStore.appendAnswerDelta(qaItem.answer || '')
+  await finalizeQuestionFlow({ qaItem, autoResume })
+}
+
+const stopStreamingAnswer = async () => {
+  qaStreamClient?.close()
+  const qaItem = qaList.value.find(item => item.id === activeStreamingQaItemId)
+  await finalizeQuestionFlow({ qaItem, autoResume: false })
+}
+
 const submitQuestion = async ({ inputQuestion = question.value.trim(), autoResume = false } = {}) => {
   const normalizedQuestion = String(inputQuestion || '').trim()
   if (!normalizedQuestion || isAsking.value || !lectureStore.sessionId) {
@@ -1153,13 +1198,78 @@ const submitQuestion = async ({ inputQuestion = question.value.trim(), autoResum
   const qaItem = {
     id: Date.now(),
     question: normalizedQuestion,
-    answer: '正在思考中...',
+    answer: '',
     evidence: [],
+    streaming: true,
   }
 
   qaList.value.push(qaItem)
+  activeStreamingQaItemId = qaItem.id
   question.value = ''
   scrollQAToBottom()
+
+  let hasSettled = false
+
+  const settleWithFallback = async error => {
+    if (hasSettled) {
+      return
+    }
+
+    hasSettled = true
+    qaStreamClient?.close()
+    qaStreamClient = null
+    showError(error, '流式回答失败，已降级为普通问答。')
+
+    try {
+      await fallbackAskQuestion({ normalizedQuestion, qaItem, autoResume })
+    } catch (fallbackError) {
+      const message = getErrorMessage(fallbackError, '提问失败，请稍后重试。')
+      qaItem.answer = message
+      lectureStore.appendAnswerDelta(message)
+      showError(fallbackError, '提问失败，请稍后重试。')
+      await finalizeQuestionFlow({ qaItem, autoResume: false })
+    }
+  }
+
+  try {
+    qaStreamClient = streamAskText(
+      {
+        sessionId: lectureStore.sessionId,
+        question: normalizedQuestion,
+        pageIndex: currentPage.value,
+      },
+      {
+        onDelta: content => {
+          if (hasSettled || !content) {
+            return
+          }
+
+          qaItem.answer += content
+          lectureStore.appendAnswerDelta(content)
+          scrollQAToBottom()
+        },
+        onDone: () => {
+          if (hasSettled) {
+            return
+          }
+
+          hasSettled = true
+          void finalizeQuestionFlow({ qaItem, autoResume })
+        },
+        onError: error => {
+          if (hasSettled) {
+            return
+          }
+
+          void settleWithFallback(error)
+        },
+      },
+    )
+    return true
+  } catch (error) {
+    await settleWithFallback(error)
+    return false
+  }
 
   try {
     const response = await askText({
@@ -1266,6 +1376,8 @@ onMounted(async () => {
 onUnmounted(() => {
   playbackEngine?.stopCurrentPage()
   stopVadMonitoring()
+  qaStreamClient?.close()
+  qaStreamClient = null
   disconnectLectureSocket()
   audioUnsubscribers.forEach(unsubscribe => unsubscribe())
   audioPlayer.destroy()
@@ -1667,6 +1779,25 @@ onUnmounted(() => {
   line-height: 1.8;
 }
 
+.bubble-streaming {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.bubble-streaming__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--primary-color);
+  box-shadow: 0 0 0 0 rgba(95, 104, 255, 0.35);
+  animation: pulse-dot 1.6s ease-out infinite;
+}
+
 .bubble-answer :deep(p) {
   margin: 0.45rem 0;
 }
@@ -1730,6 +1861,23 @@ onUnmounted(() => {
 
 .chat-composer > .app-input {
   flex: 1;
+}
+
+@keyframes pulse-dot {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(95, 104, 255, 0.3);
+  }
+
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0.42rem rgba(95, 104, 255, 0);
+  }
+
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(95, 104, 255, 0);
+  }
 }
 
 .toast {
