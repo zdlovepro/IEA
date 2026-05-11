@@ -95,6 +95,33 @@
                   </AppButton>
                 </div>
               </div>
+              <div class="control-group control-group--voice">
+                <span class="control-label">语音打断</span>
+                <div class="control-row">
+                  <AppButton
+                    v-if="!voiceInterruptEnabled"
+                    variant="secondary"
+                    :disabled="!canUseVoiceInterrupt || lectureStore.isLoading"
+                    @click="enableVoiceInterrupt"
+                  >
+                    开启语音打断
+                  </AppButton>
+                  <AppButton v-else variant="secondary" @click="disableVoiceInterrupt">
+                    关闭语音打断
+                  </AppButton>
+                </div>
+
+                <div class="voice-status-row">
+                  <span class="voice-status-pill" :class="voiceStatusClass">
+                    {{ voiceStatusText }}
+                  </span>
+                  <span class="voice-status-hint">{{ voiceStatusHint }}</span>
+                </div>
+
+                <div class="voice-volume-meter" :class="{ active: voiceInterruptEnabled }">
+                  <span class="voice-volume-bar" :style="{ transform: `scaleX(${voiceVolumeScale})` }"></span>
+                </div>
+              </div>
             </div>
 
             <div class="timeline">
@@ -215,6 +242,8 @@ import { LECTURE_STATE, LECTURE_STATUS_MAP, normalizeLectureStatus } from '@/con
 import { useLectureStore } from '@/stores/lecture'
 import audioPlayer from '@/utils/audioPlayer'
 import { createLecturePlaybackEngine } from '@/utils/lecturePlaybackEngine'
+import { createRecorder } from '@/utils/recorder'
+import { createVAD } from '@/utils/vad'
 import { getErrorMessage } from '@/utils'
 
 const route = useRoute()
@@ -234,13 +263,32 @@ const audioDuration = ref(0)
 const isAudioPaused = ref(false)
 const isSpeechPaused = ref(false)
 const isContinuousPlayback = ref(false)
+const voiceInterruptEnabled = ref(false)
+const canUseVoiceInterrupt = ref(false)
+const voiceInterruptState = ref('off')
+const voiceInterruptHint = ref('开启后会在检测到学生说话后自动打断课堂')
+const voiceVolume = ref(0)
+const recordedAudioBlob = ref(null)
+const interruptBreakpointTime = ref(0)
+const isVadListening = ref(false)
+const isVoiceRecording = ref(false)
+
+const VOICE_INTERRUPT_STATE = {
+  OFF: 'off',
+  LISTENING: 'listening',
+  RECORDING: 'recording',
+  COMPLETED: 'completed',
+  UNAVAILABLE: 'unavailable',
+}
 
 const failedAudioUrls = new Set()
 const audioUnsubscribers = []
+const recorder = createRecorder()
 
 let speechUtterance = null
 let manualSpeechStopRequested = false
 let playbackEngine = null
+let vad = null
 
 const lectureStatus = computed(() => normalizeLectureStatus(lectureStore.status))
 const statusMeta = computed(
@@ -282,6 +330,29 @@ const formattedDuration = computed(() => {
   }
   return formatDuration(audioDuration.value)
 })
+const voiceStatusText = computed(() => {
+  switch (voiceInterruptState.value) {
+    case VOICE_INTERRUPT_STATE.LISTENING:
+      return '正在倾听'
+    case VOICE_INTERRUPT_STATE.RECORDING:
+      return '正在录音'
+    case VOICE_INTERRUPT_STATE.COMPLETED:
+      return '录音完成'
+    case VOICE_INTERRUPT_STATE.UNAVAILABLE:
+      return '麦克风不可用'
+    default:
+      return voiceInterruptEnabled.value ? '已开启' : '未开启'
+  }
+})
+const voiceStatusHint = computed(() => voiceInterruptHint.value)
+const voiceStatusClass = computed(() => `voice-status-pill--${voiceInterruptState.value}`)
+const voiceVolumeScale = computed(() => {
+  if (!voiceInterruptEnabled.value) {
+    return 0.04
+  }
+
+  return Math.min(1, Math.max(0.06, voiceVolume.value * 14))
+})
 
 const formatDuration = seconds => {
   const value = Number(seconds)
@@ -308,6 +379,131 @@ const clearError = () => {
 
 const showError = (error, fallback) => {
   lectureStore.setErrorMessage(getErrorMessage(error, fallback))
+}
+
+const supportsVoiceInterrupt = () =>
+  Boolean(globalThis.navigator?.mediaDevices?.getUserMedia) &&
+  typeof globalThis.MediaRecorder !== 'undefined' &&
+  Boolean(globalThis.AudioContext || globalThis.webkitAudioContext)
+
+const updateVoiceInterruptState = (state, hint) => {
+  voiceInterruptState.value = state
+  if (hint !== undefined) {
+    voiceInterruptHint.value = hint
+  }
+}
+
+const stopVadMonitoring = () => {
+  vad?.stop()
+  isVadListening.value = false
+  voiceVolume.value = 0
+}
+
+const handleMicrophoneError = error => {
+  const permissionDenied =
+    error?.name === 'NotAllowedError' ||
+    error?.name === 'PermissionDeniedError' ||
+    error?.message?.includes('权限')
+
+  const unsupported = error?.message?.includes('不支持')
+  const message = permissionDenied
+    ? '无法访问麦克风，请检查浏览器权限，或手动输入问题。'
+    : unsupported
+      ? '当前浏览器不支持语音打断，请改用手动输入问题。'
+      : getErrorMessage(error, '无法启用语音打断，请稍后重试。')
+
+  updateVoiceInterruptState(
+    unsupported ? VOICE_INTERRUPT_STATE.UNAVAILABLE : VOICE_INTERRUPT_STATE.OFF,
+    message,
+  )
+  voiceInterruptEnabled.value = false
+  showError(message, message)
+}
+
+const ensureVad = () => {
+  if (vad) {
+    return vad
+  }
+
+  vad = createVAD({
+    threshold: 0.04,
+    silenceDurationMs: 2000,
+    minSpeechDurationMs: 160,
+    getStream: () => recorder.requestMicrophone(),
+    onSpeechStart: () => {
+      void handleSpeechStart()
+    },
+    onSpeechEnd: () => {
+      void handleSpeechEnd()
+    },
+    onVolumeChange: volume => {
+      voiceVolume.value = volume
+    },
+  })
+
+  return vad
+}
+
+const beginVoiceInterruptMonitoring = async ({ force = false } = {}) => {
+  if (!voiceInterruptEnabled.value || !canUseVoiceInterrupt.value || lectureStatus.value === LECTURE_STATE.ENDED) {
+    return false
+  }
+
+  if (isVoiceRecording.value) {
+    return false
+  }
+
+  if (force && voiceInterruptState.value === VOICE_INTERRUPT_STATE.COMPLETED) {
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已恢复，正在重新倾听')
+  }
+
+  try {
+    await recorder.requestMicrophone()
+    await ensureVad().start()
+    isVadListening.value = true
+    if (!isVoiceRecording.value) {
+      updateVoiceInterruptState(
+        VOICE_INTERRUPT_STATE.LISTENING,
+        '正在倾听，检测到说话后会自动打断课堂',
+      )
+    }
+    return true
+  } catch (error) {
+    stopVadMonitoring()
+    handleMicrophoneError(error)
+    return false
+  }
+}
+
+const enableVoiceInterrupt = async () => {
+  clearError()
+
+  if (!canUseVoiceInterrupt.value) {
+    handleMicrophoneError(new Error('当前浏览器不支持语音打断，请改用手动输入问题。'))
+    return
+  }
+
+  voiceInterruptEnabled.value = true
+  recordedAudioBlob.value = null
+  interruptBreakpointTime.value = 0
+  await beginVoiceInterruptMonitoring({ force: true })
+}
+
+const disableVoiceInterrupt = async () => {
+  voiceInterruptEnabled.value = false
+  stopVadMonitoring()
+
+  if (isVoiceRecording.value) {
+    try {
+      await recorder.stopRecording()
+    } catch (error) {
+      showError(error, '关闭语音打断时停止录音失败，请稍后重试。')
+    }
+  }
+
+  isVoiceRecording.value = false
+  recordedAudioBlob.value = null
+  updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已关闭')
 }
 
 const resetAudioProgress = () => {
@@ -348,6 +544,58 @@ const pauseCurrentPlayback = () => {
     globalThis.speechSynthesis.pause()
     isSpeechPaused.value = true
     isSpeaking.value = false
+  }
+}
+
+const handleSpeechStart = async () => {
+  if (!voiceInterruptEnabled.value || isVoiceRecording.value || !currentSlide.value) {
+    return
+  }
+
+  if (lectureStatus.value === LECTURE_STATE.ENDED || lectureStatus.value === LECTURE_STATE.ANSWERING) {
+    return
+  }
+
+  stopVadMonitoring()
+  interruptBreakpointTime.value =
+    playbackMode.value === 'audio' ? audioPlayer.getCurrentTime() : audioCurrentTime.value
+  pauseCurrentPlayback()
+  lectureStore.setStatus(LECTURE_STATE.INTERRUPTED)
+
+  try {
+    await recorder.startRecording()
+    isVoiceRecording.value = true
+    updateVoiceInterruptState(
+      VOICE_INTERRUPT_STATE.RECORDING,
+      '正在倾听，请继续说出你的问题',
+    )
+  } catch (error) {
+    voiceInterruptEnabled.value = false
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已关闭')
+    showError(error, '录音启动失败，请稍后重试。')
+  }
+}
+
+const handleSpeechEnd = async () => {
+  if (!isVoiceRecording.value) {
+    return
+  }
+
+  try {
+    const blob = await recorder.stopRecording()
+    recordedAudioBlob.value = blob
+    updateVoiceInterruptState(
+      VOICE_INTERRUPT_STATE.COMPLETED,
+      blob?.size ? '录音完成，等待识别' : '未采集到有效音频，请重试',
+    )
+  } catch (error) {
+    voiceInterruptEnabled.value = false
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已关闭')
+    showError(error, '录音停止失败，请稍后重试。')
+  } finally {
+    isVoiceRecording.value = false
+    isVadListening.value = false
+    voiceVolume.value = 0
   }
 }
 
@@ -540,12 +788,19 @@ const togglePlayback = async () => {
 
   if (isSpeaking.value || isAudioPaused.value || isSpeechPaused.value) {
     playbackEngine?.stopCurrentPage()
+    stopVadMonitoring()
+    if (voiceInterruptEnabled.value) {
+      updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已开启，等待继续播放')
+    }
     lectureStore.setStatus(LECTURE_STATE.IDLE)
     return
   }
 
   lectureStore.setStatus(LECTURE_STATE.PLAYING)
   await playbackEngine?.playPage(currentPage.value)
+  if (voiceInterruptEnabled.value) {
+    await beginVoiceInterruptMonitoring({ force: true })
+  }
 }
 
 const handlePauseLecture = async () => {
@@ -558,6 +813,10 @@ const handlePauseLecture = async () => {
   const hadActivePlayback =
     isSpeaking.value || isAudioPaused.value || isSpeechPaused.value || audioCurrentTime.value > 0
   pauseCurrentPlayback()
+  stopVadMonitoring()
+  if (voiceInterruptEnabled.value) {
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '课堂已暂停，恢复后会重新倾听')
+  }
 
   try {
     const response = await pauseLecture(lectureStore.sessionId)
@@ -590,6 +849,9 @@ const handleResumeLecture = async () => {
       syncCurrentNodeWithSlide(currentPage.value)
     }
     await resumeCurrentPlayback()
+    if (voiceInterruptEnabled.value) {
+      await beginVoiceInterruptMonitoring({ force: true })
+    }
   } catch (error) {
     showError(error, '继续课堂失败，请稍后重试。')
   } finally {
@@ -605,12 +867,22 @@ const previousSlide = async () => {
   const autoPlay = Boolean(playbackEngine?.isContinuousPlayback())
   await playbackEngine?.previousPage(autoPlay)
   if (!autoPlay) {
+    stopVadMonitoring()
+    if (voiceInterruptEnabled.value) {
+      updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '已切换页面，开始播放后会继续倾听')
+    }
     lectureStore.setStatus(LECTURE_STATE.IDLE)
+  } else if (voiceInterruptEnabled.value) {
+    await beginVoiceInterruptMonitoring()
   }
 }
 
 const nextSlide = async () => {
   if (currentPage.value >= totalPages.value) {
+    stopVadMonitoring()
+    if (voiceInterruptEnabled.value) {
+      updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '课程已结束')
+    }
     playbackEngine?.finishLecture()
     return
   }
@@ -618,7 +890,13 @@ const nextSlide = async () => {
   const autoPlay = Boolean(playbackEngine?.isContinuousPlayback())
   await playbackEngine?.nextPage(autoPlay)
   if (!autoPlay) {
+    stopVadMonitoring()
+    if (voiceInterruptEnabled.value) {
+      updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '已切换页面，开始播放后会继续倾听')
+    }
     lectureStore.setStatus(LECTURE_STATE.IDLE)
+  } else if (voiceInterruptEnabled.value) {
+    await beginVoiceInterruptMonitoring()
   }
 }
 
@@ -689,6 +967,14 @@ watch(
 )
 
 onMounted(async () => {
+  canUseVoiceInterrupt.value = supportsVoiceInterrupt()
+  updateVoiceInterruptState(
+    canUseVoiceInterrupt.value ? VOICE_INTERRUPT_STATE.OFF : VOICE_INTERRUPT_STATE.UNAVAILABLE,
+    canUseVoiceInterrupt.value
+      ? '开启后会在检测到学生说话后自动打断课堂'
+      : '当前浏览器不支持语音打断，请改用手动输入问题。',
+  )
+
   playbackEngine = createLecturePlaybackEngine({
     getSlides: () => slides.value,
     getCurrentPage: () => currentPage.value,
@@ -741,8 +1027,11 @@ onMounted(async () => {
 
 onUnmounted(() => {
   playbackEngine?.stopCurrentPage()
+  stopVadMonitoring()
   audioUnsubscribers.forEach(unsubscribe => unsubscribe())
   audioPlayer.destroy()
+  recorder.destroy()
+  void vad?.destroy()
   lectureStore.reset()
 })
 </script>
@@ -912,6 +1201,73 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
+}
+
+.voice-status-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.voice-status-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 1.9rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(126, 136, 166, 0.12);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+}
+
+.voice-status-pill--listening {
+  background: rgba(95, 104, 255, 0.12);
+  color: var(--primary-color);
+}
+
+.voice-status-pill--recording {
+  background: rgba(31, 157, 103, 0.14);
+  color: var(--success-color);
+}
+
+.voice-status-pill--completed {
+  background: rgba(228, 156, 49, 0.14);
+  color: var(--warning-color);
+}
+
+.voice-status-pill--unavailable {
+  background: rgba(203, 65, 94, 0.14);
+  color: var(--error-color);
+}
+
+.voice-status-hint {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+}
+
+.voice-volume-meter {
+  position: relative;
+  width: 100%;
+  height: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(126, 136, 166, 0.12);
+}
+
+.voice-volume-meter.active {
+  background: rgba(95, 104, 255, 0.12);
+}
+
+.voice-volume-bar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
 }
 
 .timeline {
