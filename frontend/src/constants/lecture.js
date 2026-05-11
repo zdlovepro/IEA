@@ -48,7 +48,7 @@ export const LECTURE_STATUS_MAP = {
     color: 'info',
   },
   [LECTURE_STATE.ENDED]: {
-    text: '已结束',
+    text: '课程已结束',
     className: 'state-ended',
     color: 'default',
   },

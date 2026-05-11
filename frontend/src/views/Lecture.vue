@@ -23,8 +23,8 @@
               <div class="script-card__header">
                 <div class="script-card__label-group">
                   <span class="pill">课堂讲稿</span>
-                  <span class="audio-tag" :class="{ ready: Boolean(currentSlide.audioUrl) }">
-                    {{ currentSlide.audioUrl ? '优先使用后端音频资源' : '当前页使用文本朗读兜底' }}
+                  <span class="audio-tag" :class="{ ready: useAudioPlayback }">
+                    {{ useAudioPlayback ? '优先使用后端音频资源' : '当前页使用文本朗读兜底' }}
                   </span>
                 </div>
                 <div class="page-progress">
@@ -90,11 +90,7 @@
                   >
                     继续课堂
                   </AppButton>
-                  <AppButton
-                    v-else
-                    variant="secondary"
-                    :disabled="true"
-                  >
+                  <AppButton v-else variant="secondary" :disabled="true">
                     {{ statusMeta.text }}
                   </AppButton>
                 </div>
@@ -125,8 +121,9 @@
               </button>
 
               <div class="timeline-meta">
-                <span>页进度 {{ currentPage }} / {{ totalPages || 0 }}</span>
-                <span>{{ currentSlide?.audioUrl ? '音频播放' : '文本朗读' }}</span>
+                <span>当前页进度 {{ currentPage }} / {{ totalPages || 0 }}</span>
+                <span>{{ isContinuousPlayback ? '连续播放中' : '单页预览' }}</span>
+                <span v-if="lectureStatus === LECTURE_STATE.ENDED">课程已结束</span>
               </div>
             </div>
           </AppCard>
@@ -160,7 +157,11 @@
                 <details v-if="qa.evidence?.length" class="evidence-panel">
                   <summary>查看 evidence（{{ qa.evidence.length }}）</summary>
                   <div class="evidence-list">
-                    <div v-for="(evidence, index) in qa.evidence" :key="`${qa.id}-${index}`" class="evidence-item">
+                    <div
+                      v-for="(evidence, index) in qa.evidence"
+                      :key="`${qa.id}-${index}`"
+                      class="evidence-item"
+                    >
                       <div class="evidence-item__meta">
                         <span>{{ evidence.source || 'courseware' }}</span>
                         <span v-if="evidence.pageIndex">第 {{ evidence.pageIndex }} 页</span>
@@ -213,6 +214,7 @@ import { askText } from '@/api/qa'
 import { LECTURE_STATE, LECTURE_STATUS_MAP, normalizeLectureStatus } from '@/constants/lecture'
 import { useLectureStore } from '@/stores/lecture'
 import audioPlayer from '@/utils/audioPlayer'
+import { createLecturePlaybackEngine } from '@/utils/lecturePlaybackEngine'
 import { getErrorMessage } from '@/utils'
 
 const route = useRoute()
@@ -231,11 +233,14 @@ const audioCurrentTime = ref(0)
 const audioDuration = ref(0)
 const isAudioPaused = ref(false)
 const isSpeechPaused = ref(false)
+const isContinuousPlayback = ref(false)
 
 const failedAudioUrls = new Set()
 const audioUnsubscribers = []
 
 let speechUtterance = null
+let manualSpeechStopRequested = false
+let playbackEngine = null
 
 const lectureStatus = computed(() => normalizeLectureStatus(lectureStore.status))
 const statusMeta = computed(
@@ -258,6 +263,9 @@ const progressPercent = computed(() => {
   return Math.round((currentPage.value / totalPages.value) * 100)
 })
 const errorMsg = computed(() => lectureStore.errorMessage)
+const useAudioPlayback = computed(
+  () => Boolean(currentSlide.value?.audioUrl) && !failedAudioUrls.has(currentSlide.value.audioUrl),
+)
 const playbackModeLabel = computed(() => (playbackMode.value === 'audio' ? '音频播放' : '文本朗读'))
 const audioProgressPercent = computed(() => {
   if (!audioDuration.value || playbackMode.value !== 'audio') {
@@ -269,7 +277,7 @@ const audioProgressPercent = computed(() => {
 const canSeek = computed(() => playbackMode.value === 'audio' && audioDuration.value > 0)
 const formattedCurrentTime = computed(() => formatDuration(audioCurrentTime.value))
 const formattedDuration = computed(() => {
-  if (!audioDuration.value) {
+  if (playbackMode.value !== 'audio' || !audioDuration.value) {
     return '--:--'
   }
   return formatDuration(audioDuration.value)
@@ -312,11 +320,14 @@ const resetPauseFlags = () => {
   isSpeechPaused.value = false
 }
 
-const stopCurrentPlayback = () => {
+const haltPlayback = () => {
   audioPlayer.stop()
 
   if (globalThis.speechSynthesis) {
-    globalThis.speechSynthesis.cancel()
+    if (globalThis.speechSynthesis.speaking || globalThis.speechSynthesis.pending || globalThis.speechSynthesis.paused) {
+      manualSpeechStopRequested = true
+      globalThis.speechSynthesis.cancel()
+    }
   }
 
   speechUtterance = null
@@ -347,10 +358,10 @@ const resumeCurrentPlayback = async () => {
       isAudioPaused.value = false
       isSpeaking.value = true
       lectureStore.setStatus(LECTURE_STATE.PLAYING)
-      return
+      return true
     } catch (error) {
       showError(error, '浏览器阻止了自动播放，请点击“开始朗读”继续。')
-      return
+      return false
     }
   }
 
@@ -359,108 +370,11 @@ const resumeCurrentPlayback = async () => {
     isSpeechPaused.value = false
     isSpeaking.value = true
     lectureStore.setStatus(LECTURE_STATE.PLAYING)
+    return true
   }
+
+  return false
 }
-
-const speakWithBrowser = text => {
-  if (!text || !globalThis.speechSynthesis) {
-    return
-  }
-
-  playbackMode.value = 'speech'
-  resetAudioProgress()
-  resetPauseFlags()
-
-  speechUtterance = new SpeechSynthesisUtterance(text)
-  speechUtterance.lang = 'zh-CN'
-  speechUtterance.rate = 1
-  speechUtterance.onend = () => {
-    isSpeaking.value = false
-    resetPauseFlags()
-  }
-  speechUtterance.onerror = () => {
-    isSpeaking.value = false
-    resetPauseFlags()
-  }
-
-  globalThis.speechSynthesis.speak(speechUtterance)
-  isSpeaking.value = true
-  lectureStore.setStatus(LECTURE_STATE.PLAYING)
-}
-
-const fallbackToSpeech = text => {
-  stopCurrentPlayback()
-  speakWithBrowser(text)
-}
-
-const playAudioForSlide = async slide => {
-  if (!slide?.audioUrl || failedAudioUrls.has(slide.audioUrl)) {
-    fallbackToSpeech(slide?.content || '')
-    return
-  }
-
-  playbackMode.value = 'audio'
-  resetPauseFlags()
-
-  try {
-    await audioPlayer.load(slide.audioUrl)
-    audioDuration.value = audioPlayer.getDuration()
-    audioCurrentTime.value = audioPlayer.getCurrentTime()
-    await audioPlayer.play()
-    isSpeaking.value = true
-    lectureStore.setStatus(LECTURE_STATE.PLAYING)
-  } catch (error) {
-    if (error?.name === 'NotAllowedError') {
-      showError(error, '浏览器阻止了自动播放，请点击“开始朗读”继续。')
-      stopCurrentPlayback()
-      return
-    }
-
-    failedAudioUrls.add(slide.audioUrl)
-    showError('音频加载失败，已切换文本朗读', '音频加载失败，已切换文本朗读')
-    fallbackToSpeech(slide.content)
-  }
-}
-
-const togglePlayback = async () => {
-  if (!currentSlide.value) {
-    return
-  }
-
-  if (isSpeaking.value) {
-    stopCurrentPlayback()
-    return
-  }
-
-  if (playbackMode.value === 'audio' && isAudioPaused.value) {
-    await resumeCurrentPlayback()
-    return
-  }
-
-  if (playbackMode.value === 'speech' && isSpeechPaused.value) {
-    await resumeCurrentPlayback()
-    return
-  }
-
-  stopCurrentPlayback()
-
-  if (currentSlide.value.audioUrl && !failedAudioUrls.has(currentSlide.value.audioUrl)) {
-    await playAudioForSlide(currentSlide.value)
-    return
-  }
-
-  fallbackToSpeech(currentSlide.value.content)
-}
-
-const normalizeSlide = (segment, index) => ({
-  id: segment?.id || segment?.nodeId || `segment-${index + 1}`,
-  nodeId: segment?.nodeId || segment?.id || `node-${index + 1}`,
-  pageIndex: Number(segment?.pageIndex || index + 1),
-  title: segment?.title || `第 ${index + 1} 页`,
-  content: segment?.content || '',
-  knowledgePoints: Array.isArray(segment?.knowledgePoints) ? segment.knowledgePoints : [],
-  audioUrl: segment?.audioUrl || null,
-})
 
 const syncCurrentNodeWithSlide = page => {
   const slide = slides.value[page - 1]
@@ -475,6 +389,101 @@ const syncCurrentNodeWithSlide = page => {
     audioUrl: slide.audioUrl || null,
   })
 }
+
+const syncToPage = page => {
+  lectureStore.setCurrentPage(page)
+  syncCurrentNodeWithSlide(page)
+  playbackMode.value = slides.value[page - 1]?.audioUrl ? 'audio' : 'speech'
+}
+
+const speakWithBrowser = text => {
+  if (!text || !globalThis.speechSynthesis) {
+    return
+  }
+
+  playbackMode.value = 'speech'
+  resetAudioProgress()
+  resetPauseFlags()
+  manualSpeechStopRequested = false
+
+  speechUtterance = new SpeechSynthesisUtterance(text)
+  speechUtterance.lang = 'zh-CN'
+  speechUtterance.rate = 1
+  speechUtterance.onend = async () => {
+    const manualStop = manualSpeechStopRequested
+    manualSpeechStopRequested = false
+    isSpeaking.value = false
+    resetPauseFlags()
+
+    if (manualStop) {
+      return
+    }
+
+    await playbackEngine?.handlePlaybackEnded()
+  }
+  speechUtterance.onerror = () => {
+    manualSpeechStopRequested = false
+    isSpeaking.value = false
+    resetPauseFlags()
+  }
+
+  globalThis.speechSynthesis.speak(speechUtterance)
+  isSpeaking.value = true
+  lectureStore.setStatus(LECTURE_STATE.PLAYING)
+}
+
+const fallbackToSpeech = text => {
+  haltPlayback()
+  speakWithBrowser(text)
+}
+
+const playCurrentSlideByPageIndex = async pageIndex => {
+  const slide = slides.value[pageIndex - 1]
+  if (!slide?.content) {
+    return false
+  }
+
+  haltPlayback()
+
+  if (!slide.audioUrl || failedAudioUrls.has(slide.audioUrl)) {
+    fallbackToSpeech(slide.content)
+    return true
+  }
+
+  playbackMode.value = 'audio'
+  resetPauseFlags()
+
+  try {
+    await audioPlayer.load(slide.audioUrl)
+    audioDuration.value = audioPlayer.getDuration()
+    audioCurrentTime.value = audioPlayer.getCurrentTime()
+    await audioPlayer.play()
+    isSpeaking.value = true
+    lectureStore.setStatus(LECTURE_STATE.PLAYING)
+    return true
+  } catch (error) {
+    if (error?.name === 'NotAllowedError') {
+      showError(error, '浏览器阻止了自动播放，请点击“开始朗读”继续。')
+      haltPlayback()
+      return false
+    }
+
+    failedAudioUrls.add(slide.audioUrl)
+    showError('音频加载失败，已切换文本朗读', '音频加载失败，已切换文本朗读')
+    fallbackToSpeech(slide.content)
+    return true
+  }
+}
+
+const normalizeSlide = (segment, index) => ({
+  id: segment?.id || segment?.nodeId || `segment-${index + 1}`,
+  nodeId: segment?.nodeId || segment?.id || `node-${index + 1}`,
+  pageIndex: Number(segment?.pageIndex || index + 1),
+  title: segment?.title || `第 ${index + 1} 页`,
+  content: segment?.content || '',
+  knowledgePoints: Array.isArray(segment?.knowledgePoints) ? segment.knowledgePoints : [],
+  audioUrl: segment?.audioUrl || null,
+})
 
 const loadSlides = async () => {
   lectureStore.setLoading(true)
@@ -491,9 +500,8 @@ const loadSlides = async () => {
     }
 
     slides.value = segments.map(normalizeSlide)
-    lectureStore.setCurrentPage(1)
-    syncCurrentNodeWithSlide(1)
-    playbackMode.value = slides.value[0]?.audioUrl ? 'audio' : 'speech'
+    syncToPage(1)
+    lectureStore.setStatus(LECTURE_STATE.IDLE)
     return true
   } catch (error) {
     slides.value = []
@@ -525,6 +533,21 @@ const startLectureSession = async () => {
   }
 }
 
+const togglePlayback = async () => {
+  if (!currentSlide.value) {
+    return
+  }
+
+  if (isSpeaking.value || isAudioPaused.value || isSpeechPaused.value) {
+    playbackEngine?.stopCurrentPage()
+    lectureStore.setStatus(LECTURE_STATE.IDLE)
+    return
+  }
+
+  lectureStore.setStatus(LECTURE_STATE.PLAYING)
+  await playbackEngine?.playPage(currentPage.value)
+}
+
 const handlePauseLecture = async () => {
   if (!lectureStore.sessionId) {
     return
@@ -532,7 +555,8 @@ const handlePauseLecture = async () => {
 
   lectureStore.setLoading(true)
   clearError()
-  const shouldResumeAfterFailure = isSpeaking.value
+  const hadActivePlayback =
+    isSpeaking.value || isAudioPaused.value || isSpeechPaused.value || audioCurrentTime.value > 0
   pauseCurrentPlayback()
 
   try {
@@ -540,7 +564,7 @@ const handlePauseLecture = async () => {
     lectureStore.setStatus(response.data?.status)
   } catch (error) {
     showError(error, '暂停课堂失败，请稍后重试。')
-    if (shouldResumeAfterFailure) {
+    if (hadActivePlayback) {
       await resumeCurrentPlayback()
     }
   } finally {
@@ -573,25 +597,29 @@ const handleResumeLecture = async () => {
   }
 }
 
-const previousSlide = () => {
+const previousSlide = async () => {
   if (currentPage.value <= 1) {
     return
   }
 
-  stopCurrentPlayback()
-  lectureStore.setCurrentPage(currentPage.value - 1)
-  syncCurrentNodeWithSlide(currentPage.value)
+  const autoPlay = Boolean(playbackEngine?.isContinuousPlayback())
+  await playbackEngine?.previousPage(autoPlay)
+  if (!autoPlay) {
+    lectureStore.setStatus(LECTURE_STATE.IDLE)
+  }
 }
 
-const nextSlide = () => {
+const nextSlide = async () => {
   if (currentPage.value >= totalPages.value) {
-    stopCurrentPlayback()
+    playbackEngine?.finishLecture()
     return
   }
 
-  stopCurrentPlayback()
-  lectureStore.setCurrentPage(currentPage.value + 1)
-  syncCurrentNodeWithSlide(currentPage.value)
+  const autoPlay = Boolean(playbackEngine?.isContinuousPlayback())
+  await playbackEngine?.nextPage(autoPlay)
+  if (!autoPlay) {
+    lectureStore.setStatus(LECTURE_STATE.IDLE)
+  }
 }
 
 const handleSeek = event => {
@@ -653,17 +681,33 @@ const scrollQAToBottom = () => {
 watch(
   () => currentSlide.value?.id,
   () => {
-    stopCurrentPlayback()
-    playbackMode.value = currentSlide.value?.audioUrl ? 'audio' : 'speech'
+    resetAudioProgress()
+    resetPauseFlags()
+    isSpeaking.value = false
+    playbackMode.value = useAudioPlayback.value ? 'audio' : 'speech'
   },
 )
 
 onMounted(async () => {
+  playbackEngine = createLecturePlaybackEngine({
+    getSlides: () => slides.value,
+    getCurrentPage: () => currentPage.value,
+    syncToPage,
+    playCurrentPage: playCurrentSlideByPageIndex,
+    stopPlayback: haltPlayback,
+    setLectureStatus: status => lectureStore.setStatus(status),
+    endedStatus: LECTURE_STATE.ENDED,
+    onContinuousPlaybackChange: enabled => {
+      isContinuousPlayback.value = enabled
+    },
+  })
+
   audioUnsubscribers.push(
-    audioPlayer.onEnded(() => {
+    audioPlayer.onEnded(async () => {
       isSpeaking.value = false
       isAudioPaused.value = false
       audioCurrentTime.value = audioPlayer.getCurrentTime()
+      await playbackEngine?.handlePlaybackEnded()
     }),
   )
   audioUnsubscribers.push(
@@ -696,7 +740,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  stopCurrentPlayback()
+  playbackEngine?.stopCurrentPage()
   audioUnsubscribers.forEach(unsubscribe => unsubscribe())
   audioPlayer.destroy()
   lectureStore.reset()
