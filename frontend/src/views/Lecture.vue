@@ -83,9 +83,14 @@
                     暂停课堂
                   </AppButton>
                   <AppButton
-                    v-else-if="lectureStatus === LECTURE_STATE.INTERRUPTED"
+                    v-else-if="
+                      lectureStatus === LECTURE_STATE.INTERRUPTED ||
+                      lectureStatus === LECTURE_STATE.ANSWERING
+                    "
                     variant="secondary"
-                    :disabled="lectureStore.isLoading || !lectureStore.sessionId"
+                    :disabled="
+                      lectureStore.isLoading || !lectureStore.sessionId || lectureStore.isStreamingAnswer
+                    "
                     @click="handleResumeLecture"
                   >
                     继续课堂
@@ -162,7 +167,7 @@
               <span class="eyebrow">AI 助教问答</span>
               <h2>你可以针对当前课件内容提问</h2>
             </div>
-            <span class="chat-header__status">{{ isAsking ? '思考中' : '等待提问' }}</span>
+            <span class="chat-header__status">{{ qaStatusText }}</span>
           </div>
 
           <div class="chat-history" ref="qaHistoryRef">
@@ -257,21 +262,17 @@ const isAsking = ref(false)
 const qaList = ref([])
 const qaHistoryRef = ref(null)
 const isSpeaking = ref(false)
-const playbackMode = ref('speech')
 const audioCurrentTime = ref(0)
 const audioDuration = ref(0)
 const isAudioPaused = ref(false)
 const isSpeechPaused = ref(false)
 const isContinuousPlayback = ref(false)
-const voiceInterruptEnabled = ref(false)
 const canUseVoiceInterrupt = ref(false)
 const voiceInterruptState = ref('off')
 const voiceInterruptHint = ref('开启后会在检测到学生说话后自动打断课堂')
 const voiceVolume = ref(0)
 const recordedAudioBlob = ref(null)
-const interruptBreakpointTime = ref(0)
 const isVadListening = ref(false)
-const isVoiceRecording = ref(false)
 
 const VOICE_INTERRUPT_STATE = {
   OFF: 'off',
@@ -301,9 +302,13 @@ const statusTone = computed(() => {
   }
   return color
 })
+const playbackMode = computed(() => lectureStore.audioMode)
 const currentPage = computed(() => lectureStore.currentPage)
 const totalPages = computed(() => slides.value.length)
 const currentSlide = computed(() => slides.value[currentPage.value - 1] || null)
+const voiceInterruptEnabled = computed(() => lectureStore.vadEnabled)
+const isVoiceRecording = computed(() => lectureStore.isRecording)
+const isStreamingAnswer = computed(() => lectureStore.isStreamingAnswer)
 const progressPercent = computed(() => {
   if (!totalPages.value) {
     return 0
@@ -330,6 +335,7 @@ const formattedDuration = computed(() => {
   }
   return formatDuration(audioDuration.value)
 })
+const qaStatusText = computed(() => (isStreamingAnswer.value ? '思考中' : '等待提问'))
 const voiceStatusText = computed(() => {
   switch (voiceInterruptState.value) {
     case VOICE_INTERRUPT_STATE.LISTENING:
@@ -416,7 +422,8 @@ const handleMicrophoneError = error => {
     unsupported ? VOICE_INTERRUPT_STATE.UNAVAILABLE : VOICE_INTERRUPT_STATE.OFF,
     message,
   )
-  voiceInterruptEnabled.value = false
+  lectureStore.setVadEnabled(false)
+  lectureStore.setRecording(false)
   showError(message, message)
 }
 
@@ -483,14 +490,15 @@ const enableVoiceInterrupt = async () => {
     return
   }
 
-  voiceInterruptEnabled.value = true
+  lectureStore.setVadEnabled(true)
   recordedAudioBlob.value = null
-  interruptBreakpointTime.value = 0
+  lectureStore.clearBreakpoint()
+  lectureStore.setLastRecognizedText('')
   await beginVoiceInterruptMonitoring({ force: true })
 }
 
 const disableVoiceInterrupt = async () => {
-  voiceInterruptEnabled.value = false
+  lectureStore.setVadEnabled(false)
   stopVadMonitoring()
 
   if (isVoiceRecording.value) {
@@ -501,7 +509,7 @@ const disableVoiceInterrupt = async () => {
     }
   }
 
-  isVoiceRecording.value = false
+  lectureStore.setRecording(false)
   recordedAudioBlob.value = null
   updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已关闭')
 }
@@ -557,20 +565,21 @@ const handleSpeechStart = async () => {
   }
 
   stopVadMonitoring()
-  interruptBreakpointTime.value =
+  const breakpointTime =
     playbackMode.value === 'audio' ? audioPlayer.getCurrentTime() : audioCurrentTime.value
   pauseCurrentPlayback()
-  lectureStore.setStatus(LECTURE_STATE.INTERRUPTED)
+  lectureStore.pauseForInterrupt(breakpointTime, currentPage.value)
 
   try {
     await recorder.startRecording()
-    isVoiceRecording.value = true
+    lectureStore.setRecording(true)
     updateVoiceInterruptState(
       VOICE_INTERRUPT_STATE.RECORDING,
       '正在倾听，请继续说出你的问题',
     )
   } catch (error) {
-    voiceInterruptEnabled.value = false
+    lectureStore.setVadEnabled(false)
+    lectureStore.setRecording(false)
     updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已关闭')
     showError(error, '录音启动失败，请稍后重试。')
   }
@@ -589,11 +598,11 @@ const handleSpeechEnd = async () => {
       blob?.size ? '录音完成，等待识别' : '未采集到有效音频，请重试',
     )
   } catch (error) {
-    voiceInterruptEnabled.value = false
+    lectureStore.setVadEnabled(false)
     updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已关闭')
     showError(error, '录音停止失败，请稍后重试。')
   } finally {
-    isVoiceRecording.value = false
+    lectureStore.setRecording(false)
     isVadListening.value = false
     voiceVolume.value = 0
   }
@@ -641,7 +650,7 @@ const syncCurrentNodeWithSlide = page => {
 const syncToPage = page => {
   lectureStore.setCurrentPage(page)
   syncCurrentNodeWithSlide(page)
-  playbackMode.value = slides.value[page - 1]?.audioUrl ? 'audio' : 'speech'
+  lectureStore.setAudioMode(slides.value[page - 1]?.audioUrl ? 'audio' : 'speech')
 }
 
 const speakWithBrowser = text => {
@@ -649,7 +658,7 @@ const speakWithBrowser = text => {
     return
   }
 
-  playbackMode.value = 'speech'
+  lectureStore.setAudioMode('speech')
   resetAudioProgress()
   resetPauseFlags()
   manualSpeechStopRequested = false
@@ -698,7 +707,7 @@ const playCurrentSlideByPageIndex = async pageIndex => {
     return true
   }
 
-  playbackMode.value = 'audio'
+  lectureStore.setAudioMode('audio')
   resetPauseFlags()
 
   try {
@@ -848,7 +857,12 @@ const handleResumeLecture = async () => {
     if (!response.data?.currentNode?.pageIndex) {
       syncCurrentNodeWithSlide(currentPage.value)
     }
+    lectureStore.resumeFromBreakpoint()
+    if (lectureStore.breakpointPage) {
+      syncCurrentNodeWithSlide(lectureStore.breakpointPage)
+    }
     await resumeCurrentPlayback()
+    lectureStore.clearBreakpoint()
     if (voiceInterruptEnabled.value) {
       await beginVoiceInterruptMonitoring({ force: true })
     }
@@ -919,6 +933,7 @@ const submitQuestion = async () => {
   }
 
   isAsking.value = true
+  lectureStore.enterAnswering(normalizedQuestion)
   clearError()
   const qaItem = {
     id: Date.now(),
@@ -938,12 +953,15 @@ const submitQuestion = async () => {
     })
     qaItem.answer = response.data?.answer || '当前没有获取到有效回答。'
     qaItem.evidence = Array.isArray(response.data?.evidence) ? response.data.evidence : []
+    lectureStore.appendAnswerDelta(qaItem.answer || '')
   } catch (error) {
     const message = getErrorMessage(error, '提问失败，请稍后重试。')
     qaItem.answer = message
+    lectureStore.appendAnswerDelta(message)
     showError(error, '提问失败，请稍后重试。')
   } finally {
     isAsking.value = false
+    lectureStore.finishAnswer()
     scrollQAToBottom()
   }
 }
@@ -962,7 +980,7 @@ watch(
     resetAudioProgress()
     resetPauseFlags()
     isSpeaking.value = false
-    playbackMode.value = useAudioPlayback.value ? 'audio' : 'speech'
+    lectureStore.setAudioMode(useAudioPlayback.value ? 'audio' : 'speech')
   },
 )
 
