@@ -158,6 +158,7 @@
               <div class="timeline-meta">
                 <span>当前页进度 {{ currentPage }} / {{ totalPages || 0 }}</span>
                 <span>{{ isContinuousPlayback ? '连续播放中' : '单页预览' }}</span>
+                <span v-if="breakpointHint">{{ breakpointHint }}</span>
                 <span v-if="lectureStatus === LECTURE_STATE.ENDED">课程已结束</span>
               </div>
             </div>
@@ -354,6 +355,16 @@ const formattedDuration = computed(() => {
   }
   return formatDuration(audioDuration.value)
 })
+const breakpointHint = computed(() => {
+  if (!lectureStore.breakpointPage) {
+    return ''
+  }
+
+  const breakpointLabel = formatDuration(lectureStore.breakpointTime)
+  return lectureStatus.value === LECTURE_STATE.RESUMING
+    ? `从 ${breakpointLabel} 继续讲解`
+    : `已保存断点 ${breakpointLabel}`
+})
 const qaStatusText = computed(() => (isStreamingAnswer.value ? '生成中' : '等待提问'))
 const voiceStatusText = computed(() => {
   switch (voiceInterruptState.value) {
@@ -391,6 +402,23 @@ const formatDuration = seconds => {
   return `${minutes}:${remainSeconds}`
 }
 
+const clampBreakpointTime = (seconds, duration = 0) => {
+  const value = Number(seconds)
+  if (!Number.isFinite(value) || value < 0) {
+    return 0
+  }
+
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return value
+  }
+
+  if (value > duration) {
+    return Math.max(duration - 0.5, 0)
+  }
+
+  return value
+}
+
 const renderMd = text => {
   if (!text) {
     return ''
@@ -424,6 +452,7 @@ const handleSocketMessage = message => {
 
   if (message.type === 'ack') {
     const payload = message.payload || {}
+    const breakpointTime = payload.currentTime ?? payload.breakpointTime
 
     if (payload.status) {
       lectureStore.setStatus(payload.status)
@@ -433,8 +462,8 @@ const handleSocketMessage = message => {
       lectureStore.setCurrentPage(payload.pageIndex)
     }
 
-    if (payload.currentTime !== undefined && payload.pageIndex) {
-      lectureStore.setBreakpoint(payload.pageIndex, payload.currentTime)
+    if (breakpointTime !== undefined && payload.pageIndex) {
+      lectureStore.setBreakpoint(payload.pageIndex, breakpointTime)
     }
 
     if (payload.status === LECTURE_STATE.INTERRUPTED) {
@@ -755,12 +784,11 @@ const handleSpeechEnd = async () => {
 
   try {
     const blob = await recorder.stopRecording()
+    lectureStore.setRecording(false)
+    isVadListening.value = false
+    voiceVolume.value = 0
     recordedAudioBlob.value = blob
     await processRecordedQuestion(blob)
-    updateVoiceInterruptState(
-      VOICE_INTERRUPT_STATE.COMPLETED,
-      blob?.size ? '录音完成，等待识别' : '未采集到有效音频，请重试',
-    )
   } catch (error) {
     lectureStore.setVadEnabled(false)
     updateVoiceInterruptState(VOICE_INTERRUPT_STATE.OFF, '语音打断已关闭')
@@ -795,6 +823,73 @@ const resumeCurrentPlayback = async () => {
   }
 
   return false
+}
+
+const restorePlaybackFromBreakpoint = async ({ pageIndex, breakpointTime } = {}) => {
+  const targetPage = Number(pageIndex)
+  if (!Number.isFinite(targetPage) || targetPage <= 0) {
+    lectureStore.setStatus(LECTURE_STATE.INTERRUPTED)
+    return false
+  }
+
+  const slide = slides.value[targetPage - 1]
+  if (!slide?.content) {
+    lectureStore.setStatus(LECTURE_STATE.INTERRUPTED)
+    return false
+  }
+
+  const canResumeCurrentAudio =
+    playbackMode.value === 'audio' && isAudioPaused.value && currentPage.value === targetPage
+
+  syncToPage(targetPage)
+
+  if (!slide.audioUrl || failedAudioUrls.has(slide.audioUrl)) {
+    lectureStore.setAudioMode('speech')
+    resetPauseFlags()
+    isSpeaking.value = false
+    audioCurrentTime.value = 0
+    audioDuration.value = 0
+    lectureStore.setStatus(LECTURE_STATE.PLAYING)
+    return true
+  }
+
+  try {
+    if (!canResumeCurrentAudio) {
+      await audioPlayer.load(slide.audioUrl)
+    }
+
+    const duration = audioPlayer.getDuration()
+    const targetTime = clampBreakpointTime(breakpointTime, duration)
+
+    lectureStore.setAudioMode('audio')
+    resetPauseFlags()
+    audioDuration.value = duration
+    audioPlayer.seek(targetTime)
+    audioCurrentTime.value = targetTime
+
+    if (canResumeCurrentAudio) {
+      await audioPlayer.resume()
+    } else {
+      await audioPlayer.play()
+    }
+
+    isSpeaking.value = true
+    isAudioPaused.value = false
+    lectureStore.setStatus(LECTURE_STATE.PLAYING)
+    return true
+  } catch (error) {
+    if (error?.name === 'NotAllowedError') {
+      showError(error, '浏览器阻止了自动播放，请点击“开始朗读”继续。')
+      haltPlayback()
+      return false
+    }
+
+    failedAudioUrls.add(slide.audioUrl)
+    showError('音频加载失败，已切换文本朗读', '音频加载失败，已切换文本朗读')
+    lectureStore.setAudioMode('speech')
+    lectureStore.setStatus(LECTURE_STATE.PLAYING)
+    return true
+  }
 }
 
 const syncCurrentNodeWithSlide = page => {
@@ -1013,26 +1108,44 @@ const handleResumeLecture = async () => {
   lectureStore.setLoading(true)
   clearError()
   sendLectureSignal('resume')
+  lectureStore.resumeFromBreakpoint()
 
   try {
     const response = await resumeLecture({ sessionId: lectureStore.sessionId })
+    const responsePageIndex = response.data?.pageIndex || response.data?.currentNode?.pageIndex || lectureStore.breakpointPage
+    const responseBreakpointTime = response.data?.breakpointTime ?? lectureStore.breakpointTime
     lectureStore.syncFromStartResponse({
       ...response.data,
       coursewareId,
     })
-    if (!response.data?.currentNode?.pageIndex) {
-      syncCurrentNodeWithSlide(currentPage.value)
+    if (responsePageIndex) {
+      lectureStore.setBreakpoint(responsePageIndex, responseBreakpointTime)
     }
-    lectureStore.resumeFromBreakpoint()
-    if (lectureStore.breakpointPage) {
+
+    if (!response.data?.currentNode?.pageIndex && responsePageIndex) {
+      syncCurrentNodeWithSlide(responsePageIndex)
+    }
+
+    const resumed = await restorePlaybackFromBreakpoint({
+      pageIndex: lectureStore.breakpointPage,
+      breakpointTime: lectureStore.breakpointTime,
+    })
+
+    if (!resumed && lectureStore.breakpointPage) {
       syncCurrentNodeWithSlide(lectureStore.breakpointPage)
     }
-    await resumeCurrentPlayback()
-    lectureStore.clearBreakpoint()
-    if (voiceInterruptEnabled.value) {
+
+    if (resumed) {
+      lectureStore.clearBreakpoint()
+    }
+
+    if (resumed && voiceInterruptEnabled.value) {
       await beginVoiceInterruptMonitoring({ force: true })
     }
   } catch (error) {
+    if (lectureStore.breakpointPage) {
+      lectureStore.setStatus(LECTURE_STATE.INTERRUPTED)
+    }
     showError(error, '继续课堂失败，请稍后重试。')
   } finally {
     lectureStore.setLoading(false)
@@ -1269,30 +1382,6 @@ const submitQuestion = async ({ inputQuestion = question.value.trim(), autoResum
   } catch (error) {
     await settleWithFallback(error)
     return false
-  }
-
-  try {
-    const response = await askText({
-      sessionId: lectureStore.sessionId,
-      question: normalizedQuestion,
-    })
-    qaItem.answer = response.data?.answer || '当前没有获取到有效回答。'
-    qaItem.evidence = Array.isArray(response.data?.evidence) ? response.data.evidence : []
-    lectureStore.appendAnswerDelta(qaItem.answer || '')
-  } catch (error) {
-    const message = getErrorMessage(error, '提问失败，请稍后重试。')
-    qaItem.answer = message
-    lectureStore.appendAnswerDelta(message)
-    showError(error, '提问失败，请稍后重试。')
-  } finally {
-    isAsking.value = false
-    lectureStore.finishAnswer()
-    if (autoResume && lectureStore.breakpointPage) {
-      await handleResumeLecture()
-    } else {
-      restoreLectureStatusAfterAnswer()
-    }
-    scrollQAToBottom()
   }
 }
 

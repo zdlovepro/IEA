@@ -5,6 +5,8 @@ import com.interactive.edu.vo.courseware.CurrentNodeView;
 public record LectureSessionView(
         String sessionId,
         String status,
-        CurrentNodeView currentNode
+        CurrentNodeView currentNode,
+        Integer pageIndex,
+        Double breakpointTime
 ) {
 }

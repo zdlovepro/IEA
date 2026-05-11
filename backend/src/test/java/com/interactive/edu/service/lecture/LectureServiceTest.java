@@ -59,6 +59,21 @@ class LectureServiceTest {
     }
 
     @Test
+    @DisplayName("resume view includes breakpoint page and time")
+    void resume_returnsBreakpointMetadata() {
+        stubCurrentNode(1, "node_1", "Page 1 content");
+        stubCurrentNode(2, "node_2", "Page 2 content");
+        LectureSessionView session = lectureService.startLecture("cware_ws", "user_ws");
+        lectureService.interrupt(session.sessionId(), 2, 18.6);
+
+        LectureSessionView resumed = lectureService.resume(session.sessionId());
+
+        assertThat(resumed.pageIndex()).isEqualTo(2);
+        assertThat(resumed.breakpointTime()).isEqualTo(18.6);
+        assertThat(resumed.currentNode().nodeId()).isEqualTo("node_2");
+    }
+
+    @Test
     @DisplayName("resume returns saved breakpoint and current node")
     void resumeFromBreakpoint_returnsStoredPosition() {
         stubCurrentNode(1, "node_1", "Page 1 content");

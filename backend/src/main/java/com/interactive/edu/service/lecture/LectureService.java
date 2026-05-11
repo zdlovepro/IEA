@@ -42,7 +42,9 @@ public class LectureService {
         return new LectureSessionView(
                 sessionId,
                 state.getStatus(),
-                coursewareService.getCurrentNode(coursewareId, state.getCurrentPageIndex())
+                coursewareService.getCurrentNode(coursewareId, state.getCurrentPageIndex()),
+                state.getCurrentPageIndex(),
+                state.getBreakpointTime()
         );
     }
 
@@ -56,7 +58,9 @@ public class LectureService {
         return new LectureSessionView(
                 resumeState.sessionId(),
                 LectureSessionStatus.PLAYING.name(),
-                resumeState.currentNode()
+                resumeState.currentNode(),
+                resumeState.currentPageIndex(),
+                resumeState.breakpointTime()
         );
     }
 
@@ -76,12 +80,28 @@ public class LectureService {
     public LectureRealtimeState interrupt(String sessionId, Integer pageIndex, Double currentTime) {
         validateSessionId(sessionId);
 
+        LectureRealtimeState state = updateBreakpoint(sessionId, pageIndex, currentTime);
+        SessionState session = requireSession(sessionId);
+        session.markInterrupted();
+        log.info(
+                "Lecture interrupted. sessionId={}, coursewareId={}, pageIndex={}, currentTime={}",
+                sessionId,
+                session.getCoursewareId(),
+                state.currentPageIndex(),
+                state.breakpointTime()
+        );
+        return toRealtimeState(session);
+    }
+
+    public LectureRealtimeState updateBreakpoint(String sessionId, Integer pageIndex, Double currentTime) {
+        validateSessionId(sessionId);
+
         SessionState session = requireSession(sessionId);
         int resolvedPageIndex = resolvePageIndex(pageIndex, session.getCurrentPageIndex());
         double resolvedCurrentTime = resolveCurrentTime(currentTime, session.getBreakpointTime());
-        session.interrupt(resolvedPageIndex, resolvedCurrentTime);
+        session.updateBreakpoint(resolvedPageIndex, resolvedCurrentTime);
         log.info(
-                "Lecture interrupted. sessionId={}, coursewareId={}, pageIndex={}, currentTime={}",
+                "Lecture breakpoint updated. sessionId={}, coursewareId={}, pageIndex={}, currentTime={}",
                 sessionId,
                 session.getCoursewareId(),
                 resolvedPageIndex,
@@ -218,9 +238,13 @@ public class LectureService {
             this.userId = userId;
         }
 
-        private synchronized void interrupt(int pageIndex, double currentTime) {
+        private synchronized void updateBreakpoint(int pageIndex, double currentTime) {
             this.currentPageIndex = pageIndex;
             this.breakpointTime = currentTime;
+            touch();
+        }
+
+        private synchronized void markInterrupted() {
             this.status = LectureSessionStatus.INTERRUPTED.name();
             touch();
         }
