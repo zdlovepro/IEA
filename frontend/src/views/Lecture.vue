@@ -121,6 +121,9 @@
                     {{ voiceStatusText }}
                   </span>
                   <span class="voice-status-hint">{{ voiceStatusHint }}</span>
+                  <span class="voice-status-hint">
+                    {{ wsConnected ? '信令已连接，可自动同步打断状态' : '信令未连接，仍可手动提问' }}
+                  </span>
                 </div>
 
                 <div class="voice-volume-meter" :class="{ active: voiceInterruptEnabled }">
@@ -240,6 +243,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCard from '@/components/ui/AppCard.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
+import { recognizeAudio } from '@/api/asr'
 import { getCoursewareScript } from '@/api/courseware'
 import { pauseLecture, resumeLecture, startLecture } from '@/api/lecture'
 import { askText } from '@/api/qa'
@@ -247,6 +251,7 @@ import { LECTURE_STATE, LECTURE_STATUS_MAP, normalizeLectureStatus } from '@/con
 import { useLectureStore } from '@/stores/lecture'
 import audioPlayer from '@/utils/audioPlayer'
 import { createLecturePlaybackEngine } from '@/utils/lecturePlaybackEngine'
+import { createLectureSocket } from '@/utils/lectureSocket'
 import { createRecorder } from '@/utils/recorder'
 import { createVAD } from '@/utils/vad'
 import { getErrorMessage } from '@/utils'
@@ -289,6 +294,10 @@ const recorder = createRecorder()
 let speechUtterance = null
 let manualSpeechStopRequested = false
 let playbackEngine = null
+let lectureSocket = null
+let socketMessageUnsubscribe = null
+let socketErrorUnsubscribe = null
+let hasShownSocketError = false
 let vad = null
 
 const lectureStatus = computed(() => normalizeLectureStatus(lectureStore.status))
@@ -309,6 +318,7 @@ const currentSlide = computed(() => slides.value[currentPage.value - 1] || null)
 const voiceInterruptEnabled = computed(() => lectureStore.vadEnabled)
 const isVoiceRecording = computed(() => lectureStore.isRecording)
 const isStreamingAnswer = computed(() => lectureStore.isStreamingAnswer)
+const wsConnected = computed(() => lectureStore.wsConnected)
 const progressPercent = computed(() => {
   if (!totalPages.value) {
     return 0
@@ -385,6 +395,146 @@ const clearError = () => {
 
 const showError = (error, fallback) => {
   lectureStore.setErrorMessage(getErrorMessage(error, fallback))
+}
+
+const handleSocketMessage = message => {
+  if (!message || typeof message !== 'object') {
+    return
+  }
+
+  if (message.type === 'connection') {
+    const isOpen = message.payload?.status === 'open'
+    lectureStore.setWsConnected(isOpen)
+    if (isOpen) {
+      hasShownSocketError = false
+    }
+    return
+  }
+
+  lectureStore.setWsConnected(true)
+
+  if (message.type === 'ack') {
+    const payload = message.payload || {}
+
+    if (payload.status) {
+      lectureStore.setStatus(payload.status)
+    }
+
+    if (payload.pageIndex) {
+      lectureStore.setCurrentPage(payload.pageIndex)
+    }
+
+    if (payload.currentTime !== undefined && payload.pageIndex) {
+      lectureStore.setBreakpoint(payload.pageIndex, payload.currentTime)
+    }
+
+    if (payload.status === LECTURE_STATE.INTERRUPTED) {
+      updateVoiceInterruptState(VOICE_INTERRUPT_STATE.RECORDING, '已暂停讲解，正在倾听')
+    }
+    return
+  }
+
+  if (message.type === 'state') {
+    const payload = message.payload || {}
+
+    if (payload.status) {
+      lectureStore.setStatus(payload.status)
+    }
+
+    if (payload.currentNode) {
+      lectureStore.setCurrentNode(payload.currentNode)
+    } else if (payload.pageIndex) {
+      syncCurrentNodeWithSlide(payload.pageIndex)
+    }
+
+    if (payload.currentTime !== undefined && payload.pageIndex) {
+      lectureStore.setBreakpoint(payload.pageIndex, payload.currentTime)
+    }
+    return
+  }
+
+  if (message.type === 'error') {
+    const messageText = message.payload?.message || '信令连接失败，可继续手动提问。'
+    showError(messageText, messageText)
+  }
+}
+
+const handleSocketError = error => {
+  lectureStore.setWsConnected(false)
+  if (hasShownSocketError) {
+    return
+  }
+
+  hasShownSocketError = true
+  showError(error, '信令连接失败，可继续手动提问。')
+}
+
+const ensureLectureSocket = () => {
+  if (lectureSocket) {
+    return lectureSocket
+  }
+
+  lectureSocket = createLectureSocket()
+  socketMessageUnsubscribe = lectureSocket.onMessage(handleSocketMessage)
+  socketErrorUnsubscribe = lectureSocket.onError(handleSocketError)
+  return lectureSocket
+}
+
+const connectLectureSocket = async sessionId => {
+  if (!sessionId) {
+    return false
+  }
+
+  try {
+    await ensureLectureSocket().connect(sessionId)
+    lectureStore.setWsConnected(true)
+    hasShownSocketError = false
+    return true
+  } catch (error) {
+    handleSocketError(error)
+    return false
+  }
+}
+
+const disconnectLectureSocket = () => {
+  lectureStore.setWsConnected(false)
+  socketMessageUnsubscribe?.()
+  socketErrorUnsubscribe?.()
+  socketMessageUnsubscribe = null
+  socketErrorUnsubscribe = null
+  lectureSocket?.close()
+  lectureSocket = null
+}
+
+const sendLectureSignal = (type, payload = {}) => {
+  if (!lectureStore.sessionId) {
+    return false
+  }
+
+  try {
+    return ensureLectureSocket().send(type, {
+      sessionId: lectureStore.sessionId,
+      ...payload,
+    })
+  } catch (error) {
+    handleSocketError(error)
+    return false
+  }
+}
+
+const createRecordedAudioFile = blob => {
+  const mimeType = blob?.type || 'audio/webm'
+  const extension = mimeType.includes('wav')
+    ? 'wav'
+    : mimeType.includes('mpeg') || mimeType.includes('mp3')
+      ? 'mp3'
+      : mimeType.includes('mp4') || mimeType.includes('m4a')
+        ? 'm4a'
+        : 'webm'
+
+  return new File([blob], `lecture-question-${Date.now()}.${extension}`, {
+    type: mimeType,
+  })
 }
 
 const supportsVoiceInterrupt = () =>
@@ -573,6 +723,10 @@ const handleSpeechStart = async () => {
   try {
     await recorder.startRecording()
     lectureStore.setRecording(true)
+    sendLectureSignal('interrupt', {
+      pageIndex: currentPage.value,
+      currentTime: breakpointTime,
+    })
     updateVoiceInterruptState(
       VOICE_INTERRUPT_STATE.RECORDING,
       '正在倾听，请继续说出你的问题',
@@ -593,6 +747,7 @@ const handleSpeechEnd = async () => {
   try {
     const blob = await recorder.stopRecording()
     recordedAudioBlob.value = blob
+    await processRecordedQuestion(blob)
     updateVoiceInterruptState(
       VOICE_INTERRUPT_STATE.COMPLETED,
       blob?.size ? '录音完成，等待识别' : '未采集到有效音频，请重试',
@@ -783,6 +938,7 @@ const startLectureSession = async () => {
     if (!response.data?.currentNode?.pageIndex) {
       syncCurrentNodeWithSlide(currentPage.value)
     }
+    await connectLectureSocket(lectureStore.sessionId)
   } catch (error) {
     showError(error, '无法开始课堂，请稍后重试。')
   } finally {
@@ -847,6 +1003,7 @@ const handleResumeLecture = async () => {
 
   lectureStore.setLoading(true)
   clearError()
+  sendLectureSignal('resume')
 
   try {
     const response = await resumeLecture({ sessionId: lectureStore.sessionId })
@@ -926,8 +1083,66 @@ const handleSeek = event => {
   audioCurrentTime.value = audioPlayer.getCurrentTime()
 }
 
-const submitQuestion = async () => {
-  const normalizedQuestion = question.value.trim()
+const restoreLectureStatusAfterAnswer = () => {
+  if (lectureStore.breakpointPage) {
+    lectureStore.setStatus(LECTURE_STATE.INTERRUPTED)
+    return
+  }
+
+  if (lectureStatus.value === LECTURE_STATE.ENDED) {
+    return
+  }
+
+  if (isSpeaking.value || isAudioPaused.value || isSpeechPaused.value) {
+    lectureStore.setStatus(LECTURE_STATE.PLAYING)
+    return
+  }
+
+  lectureStore.setStatus(LECTURE_STATE.IDLE)
+}
+
+const processRecordedQuestion = async blob => {
+  if (!blob?.size) {
+    lectureStore.setLastRecognizedText('')
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.COMPLETED, '未识别到有效问题，请手动输入。')
+    showError('未识别到有效问题，请手动输入。', '未识别到有效问题，请手动输入。')
+    return false
+  }
+
+  if (!lectureStore.sessionId) {
+    return false
+  }
+
+  try {
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.COMPLETED, '录音完成，正在识别')
+    const response = await recognizeAudio({
+      file: createRecordedAudioFile(blob),
+      sessionId: lectureStore.sessionId,
+      pageIndex: currentPage.value,
+    })
+    const recognizedText = String(response.data?.text || '').trim()
+    lectureStore.setLastRecognizedText(recognizedText)
+
+    if (!recognizedText) {
+      updateVoiceInterruptState(VOICE_INTERRUPT_STATE.COMPLETED, '未识别到有效问题，请手动输入。')
+      showError('未识别到有效问题，请手动输入。', '未识别到有效问题，请手动输入。')
+      return false
+    }
+
+    question.value = recognizedText
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.COMPLETED, '识别成功，正在自动提问')
+    await submitQuestion({ inputQuestion: recognizedText, autoResume: true })
+    return true
+  } catch (error) {
+    lectureStore.setLastRecognizedText('')
+    updateVoiceInterruptState(VOICE_INTERRUPT_STATE.COMPLETED, '识别失败，请手动输入问题。')
+    showError(error, '识别失败，请手动输入问题。')
+    return false
+  }
+}
+
+const submitQuestion = async ({ inputQuestion = question.value.trim(), autoResume = false } = {}) => {
+  const normalizedQuestion = String(inputQuestion || '').trim()
   if (!normalizedQuestion || isAsking.value || !lectureStore.sessionId) {
     return
   }
@@ -962,6 +1177,11 @@ const submitQuestion = async () => {
   } finally {
     isAsking.value = false
     lectureStore.finishAnswer()
+    if (autoResume && lectureStore.breakpointPage) {
+      await handleResumeLecture()
+    } else {
+      restoreLectureStatusAfterAnswer()
+    }
     scrollQAToBottom()
   }
 }
@@ -1046,6 +1266,7 @@ onMounted(async () => {
 onUnmounted(() => {
   playbackEngine?.stopCurrentPage()
   stopVadMonitoring()
+  disconnectLectureSocket()
   audioUnsubscribers.forEach(unsubscribe => unsubscribe())
   audioPlayer.destroy()
   recorder.destroy()
